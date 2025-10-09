@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Daily Caviar Digest — {{date}}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {font-family: Arial, Helvetica, sans-serif; background:#f5f7fa; margin:0; padding:0;}
+    .wrap {max-width:700px; margin:18px auto; background:#fff; border-radius:8px; overflow:hidden;}
+    .header {background:#0b6cff; color:#fff; padding:18px;}
+    .header h1 {margin:0; font-size:20px;}
+    .meta {padding:12px 18px; color:#6b7280; font-size:13px;}
+    .item {padding:16px 18px; border-top:1px solid #eef1f7;}
+    .item h2 {margin:0 0 6px 0; font-size:16px;}
+    .small {font-size:12px; color:#94a3b8;}
+    .badge {display:inline-block; padding:4px 8px; border-radius:12px; font-size:12px; background:#eef2ff; color:#1e3a8a; margin-right:6px;}
+    .cta {display:inline-block; margin-top:8px; padding:8px 12px; background:#0b6cff; color:#fff; text-decoration:none; border-radius:6px;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <h1>Daily Caviar Digest</h1>
+      <div class="small">Top updates for {{date}} • {{items|length}} items</div>
+    </div>
+
+    <div class="meta">
+      Highlights: <strong>{{highlight_summary}}</strong>
+    </div>
+
+    {% for it in items %}
+    <div class="item">
+      <div>
+        <span class="badge">Impact: {{it.impact}}</span>
+        <span class="badge">{{it.category}}</span>
+      </div>
+      <h2><a href="{{it.url}}" style="color:#0b6cff; text-decoration:none;">{{it.title}}</a></h2>
+      <div class="small">Source: {{it.source}} • Published: {{it.published_at}}</div>
+      <p>{{it.summary}}</p>
+      <a class="cta" href="{{it.url}}">Read full article</a>
+    </div>
+    {% endfor %}
+
+    <div style="padding:14px 18px; border-top:1px solid #f0f2f5; font-size:13px; color:#9ca3af;">
+      This digest was generated automatically. To unsubscribe, reply to this email.
+    </div>
+  </div>
+</body>
+</html>
