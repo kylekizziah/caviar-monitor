@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Daily Caviar Digest</title>
+  <style>
+    body { font-family: Arial, sans-serif; background-color: #fafafa; color: #222; }
+    h1 { color: #222; border-bottom: 2px solid #999; padding-bottom: 4px; }
+    .article { margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid #ddd; }
+    .category { font-size: 0.8em; text-transform: uppercase; color: #888; }
+    a { color: #0066cc; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>🐟 Daily Caviar Digest — {{ date }}</h1>
+  <p><strong>Highlights:</strong> {{ highlight_summary }}</p>
+
+  {% if items %}
+    {% for item in items %}
+      <div class="article">
+        <div class="category">{{ item.category }}</div>
+        <h3><a href="{{ item.url }}">{{ item.title }}</a></h3>
+        <p>{{ item.summary }}</p>
+        <p><em>{{ item.source }} — {{ item.published_at }}</em></p>
+      </div>
+    {% endfor %}
+  {% else %}
+    <p>No major caviar headlines found in the last 72 hours. 🐟</p>
+  {% endif %}
+</body>
+</html>
