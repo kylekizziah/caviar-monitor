@@ -5,18 +5,30 @@ sites:
       - "https://thecaviarfarm.com/order-caviar-online-marshallberg-farm/"
     allow_domains: ["thecaviarfarm.com"]
     type: producer
+    selectors:
+      product_link: "a[href*='/product'], a[href*='/products'], a[href*='/shop/'], a[href*='/store/'], a[href*='/item/'], a[href*='caviar']"
+      name: "h1"
+      price: ".price, .product-price, [itemprop='price'], .price-item--regular, meta[property='og:price:amount']::attr(content)"
 
   - name: "Browne Trading Company"
     start_urls:
       - "https://brownetrading.com/collections/buy-caviar-online"
     allow_domains: ["brownetrading.com"]
     type: retail
+    selectors:
+      product_link: "a[href*='/products/'], a[href*='/product/']"
+      name: "h1"
+      price: ".price, .product__price, [itemprop='price'], meta[property='og:price:amount']::attr(content)"
 
   - name: "Imperia Caviar"
     start_urls:
       - "https://imperiacaviar.com/collections/caviar"
     allow_domains: ["imperiacaviar.com"]
     type: retail
+    selectors:
+      product_link: "a[href*='/products/'], a[href*='/product/']"
+      name: "h1"
+      price: ".price, .product__price, [itemprop='price'], meta[property='og:price:amount']::attr(content)"
 
   - name: "The Caviar Co."
     start_urls:
@@ -24,33 +36,57 @@ sites:
       - "https://thecaviarco.com/pages/wholesale"
     allow_domains: ["thecaviarco.com"]
     type: hybrid
+    selectors:
+      product_link: "a[href*='/products/'], a[href*='/product/'], a[href*='/collections/']"
+      name: "h1"
+      price: ".price, .price__regular, [itemprop='price'], meta[property='og:price:amount']::attr(content)"
 
   - name: "Gourmet Food Store"
     start_urls:
-      - "https://gourmetfoodstore.com/caviar/"
-    allow_domains: ["gourmetfoodstore.com"]
+      - "https://www.gourmetfoodstore.com/caviar/"
+    allow_domains: ["gourmetfoodstore.com","www.gourmetfoodstore.com"]
     type: retail
+    selectors:
+      product_link: "a[href*='/caviar/'], a[href*='/products/'], a[href*='/product/']"
+      name: "h1, .product-name"
+      price: ".price, .product-price, [itemprop='price'], meta[property='og:price:amount']::attr(content)"
 
   - name: "Marky’s"
     start_urls:
       - "https://markys.com/?s=caviar"
-    allow_domains: ["markys.com"]
+    allow_domains: ["markys.com","www.markys.com"]
     type: retail
+    selectors:
+      product_link: "a[href*='/product/'], a[href*='/products/'], a[href*='/caviar']"
+      name: "h1"
+      price: ".price, .woocommerce-Price-amount, [itemprop='price'], meta[property='og:price:amount']::attr(content)"
 
   - name: "Black River Caviar"
     start_urls:
       - "https://www.blackrivercaviar.com/shop/"
-    allow_domains: ["blackrivercaviar.com"]
+    allow_domains: ["blackrivercaviar.com","www.blackrivercaviar.com"]
     type: retail
+    selectors:
+      product_link: "a[href*='/product/'], a[href*='/products/'], a[href*='caviar']"
+      name: "h1"
+      price: ".price, .product-price, [itemprop='price'], meta[property='og:price:amount']::attr(content)"
 
   - name: "Calvisius USA"
     start_urls:
       - "https://calvisiususa.com/collections/caviar"
     allow_domains: ["calvisiususa.com"]
     type: retail
+    selectors:
+      product_link: "a[href*='/products/'], a[href*='/product/']"
+      name: "h1"
+      price: ".price, .product__price, [itemprop='price'], meta[property='og:price:amount']::attr(content)"
 
   - name: "Gourmet Wholesaler"
     start_urls:
       - "https://www.gourmetwholesaler.com/caviar-and-seafood/"
-    allow_domains: ["gourmetwholesaler.com"]
+    allow_domains: ["gourmetwholesaler.com","www.gourmetwholesaler.com"]
     type: wholesale
+    selectors:
+      product_link: "a[href*='/caviar'], a[href*='/product/'], a[href*='/products/']"
+      name: "h1, .product-title"
+      price: ".price, .product-price, [itemprop='price'], meta[property='og:price:amount']::attr(content)"
