@@ -30,8 +30,11 @@ MAX_LINKS_PER_SITE = int(os.getenv("MAX_LINKS_PER_SITE", "40"))  # per site cap
 
 # Debug / test modes
 DEBUG_URL = os.getenv("DEBUG_URL")    # scrape a single product URL and print result (no email)
-SEND_TEST = os.getenv("SEND_TEST")    # set to "1" to send a simple test email immediately
+SEND_TEST = os.getenv("SEND_TEST")    # "1" = send a simple test email
 RESPECT_ROBOTS = os.getenv("RESPECT_ROBOTS", "1") not in ("0", "false", "False")
+
+# NEW: fallback seeds — comma-separated list of exact product URLs
+SEED_PRODUCT_URLS = [u.strip() for u in os.getenv("SEED_PRODUCT_URLS", "").split(",") if u.strip()]
 
 # Template loader (absolute path so it works on Render)
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), 'templates')
@@ -84,7 +87,7 @@ def init_db(path):
         site TEXT, url TEXT, name TEXT, currency TEXT, price REAL,
         size_g REAL, size_label TEXT, per_g REAL, seen_at TEXT
     )""")
-    # keep news table for future use
+    # keep news table for future use (not used in price digest right now)
     c.execute("""CREATE TABLE IF NOT EXISTS news(
         id TEXT PRIMARY KEY, title TEXT, url TEXT, published_at TEXT,
         source TEXT, summary TEXT, category TEXT, seen_at TEXT
@@ -220,12 +223,10 @@ def is_individual_tinjar(name, page_text):
     pack = infer_packaging(nm) or infer_packaging(pg)
     size_g, _ = parse_size(nm + " " + pg)
     # Require tin/jar OR a common single size (to avoid sets/bundles)
-    if pack: 
+    if pack:
         return True
-    if size_g:
-        # treat as individual tin if size is very close to a typical tin size
-        if any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G):
-            return True
+    if size_g and any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G):
+        return True
     return False
 
 def size_tokens(size_g):
@@ -235,10 +236,8 @@ def size_tokens(size_g):
     oz = size_g / 28.3495
     oz_round = round(oz, 1)
     tokens = {f"{g}g", f"{g} g"}
-    # also add nearby gram spellings like 28/30g around 1oz
     if g in (28,29,30):
         tokens.update({"28g","29g","30g","28 g","29 g","30 g"})
-    # ounce tokens
     def oz_str(x):
         if abs(x - round(x)) < 0.05:
             return str(int(round(x)))
@@ -248,9 +247,7 @@ def size_tokens(size_g):
     return {t.lower() for t in tokens}
 
 def extract_ld_json_products_extended(soup):
-    """
-    Return list of {name, desc, offers:[{price, currency, name?, sku?}]}
-    """
+    """Return list of {name, desc, offers:[{price, currency, name?, sku?}]}"""
     items=[]
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
@@ -285,16 +282,13 @@ def choose_offer_for_size(offers, size_g):
     if not offers or not size_g: 
         return None
     toks = size_tokens(size_g)
-    # 1) perfect token match in offer name/sku
     for o in offers:
         s = (o.get("name","") + " " + o.get("sku","")).lower()
         if any(t in s for t in toks):
             return o
-    # 2) otherwise: if there is only one offer with a price, take it
     priced = [o for o in offers if o.get("price")]
     if len(priced) == 1:
         return priced[0]
-    # 3) last resort: the lowest priced offer
     if priced:
         return sorted(priced, key=lambda x: x.get("price"))[0]
     return None
@@ -314,7 +308,6 @@ def scrape_product_page(url, site_selectors=None):
         print("BLOCKLIST skip:", url)
         return []
     if "/product" not in low_url and "/products" not in low_url:
-        # hard guard: must be a product page
         return []
 
     if not robots_allowed(url):
@@ -352,7 +345,6 @@ def scrape_product_page(url, site_selectors=None):
         price = offer.get("price") if offer else None
         currency = (offer.get("currency") if offer else "USD") if price else None
         if not price:
-            # fallback price anywhere on page
             cur, maybe = norm_price_currency(page_text)
             price = maybe; currency = cur if maybe else None
         if not (size_g and price and currency):
@@ -365,7 +357,7 @@ def scrape_product_page(url, site_selectors=None):
             "per_g": float(price)/float(size_g), "url": url
         })
 
-    # 2) Fallback: selectors/meta (when no usable JSON-LD)
+    # 2) Fallback: selectors/meta
     if not out:
         name = h1_text or page_title
         if not is_individual_tinjar(name, page_text):
@@ -419,7 +411,7 @@ def scrape_product_page(url, site_selectors=None):
 def crawl_site(site, deadline=None):
     """
     Crawl a site's category/start URLs; discover product links; visit them; return parsed products.
-    - Only follows **real product pages** (/product/ or /products/).
+    - Only follows real product pages (/product/ or /products/).
     - Skips blocked/utility pages.
     - Stops early if 'deadline' is reached.
     """
@@ -503,7 +495,7 @@ def crawl_site(site, deadline=None):
 # Email render/send
 # =========================
 def render_html(cheapest, movers, news_items):
-    # Your template should display items' size_label, which looks like: "1 oz / 30 g tin"
+    # Template should display items' size_label: "1 oz / 30 g tin"
     tpl = env.get_template("digest_template.html")
     return tpl.render(
         date=datetime.utcnow().strftime("%B %d, %Y"),
@@ -569,14 +561,15 @@ def main():
         try:
             with open(seed_path, "r") as f:
                 cfg = yaml.safe_load(f) or {}
-            print("Loaded price_sites.yaml with", len(cfg.get("sites", [])), "sites.")
+            sites = cfg.get("sites", [])
+            print("Loaded price_sites.yaml with", len(sites), "sites.")
         except Exception as e:
             print("No price_sites.yaml found or unreadable:", e)
-            cfg = {"sites": []}
+            sites = []
 
         # Crawl within timebox
         all_prices=[]
-        for site in cfg.get("sites", []):
+        for site in sites:
             if time_left() <= 3:
                 print("Global timebox reached before starting next site.")
                 break
@@ -585,6 +578,19 @@ def main():
             print(f" -> {len(items)} products from {site.get('name')}")
             all_prices.extend(items)
             time.sleep(0.2)
+
+        # Fallback: if nothing found, try SEED_PRODUCT_URLS
+        if not all_prices and SEED_PRODUCT_URLS:
+            print("No site products found — trying SEED_PRODUCT_URLS fallback.")
+            stub_site = {"name":"seed", "selectors":{}}
+            kept = 0
+            for u in SEED_PRODUCT_URLS:
+                prods = scrape_product_page(u, site_selectors={})
+                for p in prods:
+                    p["site"] = "seed"
+                    all_prices.append(p)
+                    kept += 1
+            print(f" -> {kept} products from seeds.")
 
         if all_prices:
             store_prices(conn, all_prices)
