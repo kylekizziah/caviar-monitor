@@ -1,6 +1,6 @@
 # 🐟 Caviar Monitor
 
-**Caviar Monitor** is a simple Python service that collects news, updates, and research about caviar around the world.  
+**Caviar Monitor** is a simple Python service that collects news, pricing, updates, and research about caviar around the world.  
 It can summarize new articles and send you a **daily email digest**.
 
 ---
