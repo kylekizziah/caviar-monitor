@@ -36,3 +36,55 @@ sites:
     type: wholesale
 
   # You can add: Petrossian, Marky’s, The Caviar Co., Caviar Russe, Kolikof, D’Artagnan, Browne Wholesale, etc.
+
+  sites:
+  - name: "Marshallberg Farm"
+    start_urls:
+      - "https://thecaviarfarm.com/fresh-caviar/"
+      - "https://thecaviarfarm.com/order-caviar-online-marshallberg-farm/"
+    allow_domains: ["thecaviarfarm.com"]
+    type: producer
+
+  - name: "Browne Trading Company"
+    start_urls:
+      - "https://brownetrading.com/collections/buy-caviar-online"
+    allow_domains: ["brownetrading.com"]
+    type: retail
+
+  - name: "Caviar Russe (Retail/Trade)"
+    start_urls:
+      - "https://caviarrusse.com/pages/caviar"
+      - "https://caviarrusse.com/pages/trade"
+    allow_domains: ["caviarrusse.com"]
+    type: wholesale
+
+  - name: "Gourmet Wholesaler"
+    start_urls:
+      - "https://www.gourmetwholesaler.com/caviar-and-seafood/"
+    allow_domains: ["gourmetwholesaler.com"]
+    type: wholesale
+
+  - name: "Imperia Caviar"
+    start_urls:
+      - "https://imperiacaviar.com/collections/caviar"
+    allow_domains: ["imperiacaviar.com"]
+    type: retail
+
+  - name: "The Caviar Co."
+    start_urls:
+      - "https://thecaviarco.com/collections/all-caviar"
+      - "https://thecaviarco.com/pages/wholesale"
+    allow_domains: ["thecaviarco.com"]
+    type: hybrid
+
+  - name: "Gourmet Food Store"
+    start_urls:
+      - "https://gourmetfoodstore.com/caviar/"
+    allow_domains: ["gourmetfoodstore.com"]
+    type: retail
+
+  - name: "Marky’s Caviar / Marky’s Gourmet"
+    start_urls:
+      - "https://markys.com/?s=caviar"
+    allow_domains: ["markys.com"]
+    type: retail
