@@ -1,0 +1,38 @@
+sites:
+  - name: "Marshallberg Farm (NC farm, direct)"
+    start_urls: ["https://thecaviarfarm.com/fresh-caviar/","https://thecaviarfarm.com/order-caviar-online-marshallberg-farm/"]
+    allow_domains: ["thecaviarfarm.com"]
+    type: retail
+    notes: "Ships overnight in the U.S."
+
+  - name: "Browne Trading Company"
+    start_urls: ["https://brownetrading.com/collections/buy-caviar-online"]
+    allow_domains: ["brownetrading.com"]
+    type: retail
+
+  - name: "Imperia Caviar"
+    start_urls: ["https://imperiacaviar.com/collections/all"]
+    allow_domains: ["imperiacaviar.com"]
+    type: retail
+
+  - name: "Pearl Street Caviar"
+    start_urls: ["https://pearlstreetcaviar.com/collections"]
+    allow_domains: ["pearlstreetcaviar.com"]
+    type: retail
+
+  - name: "Black River Caviar"
+    start_urls: ["https://www.blackrivercaviar.com/shop/"]
+    allow_domains: ["blackrivercaviar.com"]
+    type: retail
+
+  - name: "Calvisius USA"
+    start_urls: ["https://calvisiususa.com/collections/caviar"]
+    allow_domains: ["calvisiususa.com"]
+    type: retail
+
+  - name: "Gourmet Wholesaler (wholesale)"
+    start_urls: ["https://www.gourmetwholesaler.com/caviar-and-seafood/"]
+    allow_domains: ["gourmetwholesaler.com"]
+    type: wholesale
+
+  # You can add: Petrossian, Marky’s, The Caviar Co., Caviar Russe, Kolikof, D’Artagnan, Browne Wholesale, etc.
