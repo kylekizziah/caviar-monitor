@@ -10,93 +10,105 @@ from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 from dotenv import load_dotenv
 
-# ---------------- Env & constants ----------------
+# =========================
+# Environment & Constants
+# =========================
 load_dotenv()
 
-NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
+NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")  # optional (news currently disabled in digest)
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 FROM_EMAIL = os.getenv("FROM_EMAIL")
 TO_EMAIL = os.getenv("TO_EMAIL")
-DIGEST_ITEMS = int(os.getenv("DIGEST_ITEMS", "6"))
-DB_PATH = os.getenv("DB_PATH", "caviar_agent.db")
-QUERY_TERMS = [q.strip() for q in os.getenv("QUERY_TERMS", '"caviar"').split(",")]
-DEBUG_URL = os.getenv("DEBUG_URL")
-SEND_TEST = os.getenv("SEND_TEST")  # set to "1" to test email only
 
+DB_PATH = os.getenv("DB_PATH", "caviar_agent.db")
+DIGEST_ITEMS = int(os.getenv("DIGEST_ITEMS", "6"))
+
+# Controls crawl/runtime so email always sends
+RUN_LIMIT_SECONDS = int(os.getenv("RUN_LIMIT_SECONDS", "180"))   # total timebox
+MAX_LINKS_PER_SITE = int(os.getenv("MAX_LINKS_PER_SITE", "40"))  # per site cap
+
+# Debug / test modes
+DEBUG_URL = os.getenv("DEBUG_URL")    # scrape a single product URL and print result (no email)
+SEND_TEST = os.getenv("SEND_TEST")    # set to "1" to send a simple test email immediately
+
+# Template loader (absolute path so it works on Render)
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), 'templates')
 env = Environment(
     loader=FileSystemLoader(TEMPLATE_DIR),
     autoescape=select_autoescape(['html', 'xml'])
 )
 
+# =========================
+# Matching & Parsing
+# =========================
 CAVIAR_WORD = re.compile(r"\bcaviar\b", re.IGNORECASE)
 SIZE_RE = re.compile(r'(\d+(?:\.\d+)?)\s*(g|gram|grams|oz|ounce|ounces)\b', re.I)
 MONEY_RE = re.compile(r'([$\£\€])\s*([0-9]+(?:\.[0-9]{1,2})?)')
-BAD_NEWS_CONTEXT = [
-    "champagne and caviar", "private jet", "status symbol",
-    "beauty", "skincare", "makeup", "art deco", "fashion show"
+
+# accessories/gifts/sets to exclude
+EXCLUDE_WORDS = [
+    "gift set","giftset","set","bundle","sampler","flight","pairing","experience","kit",
+    "accessory","accessories","spoon","mother of pearl","key","opener","tin opener",
+    "blini","bellini","crepe","crème fraîche","creme fraiche","ice bowl","server",
+    "tray","plate","dish","cooler","chiller","gift card","card","chips","tote","bag"
 ]
+# roe to exclude (non-caviar) — keeps items that explicitly say "caviar"
+NON_CAVIAR_ROE = ["salmon roe","trout roe","whitefish roe","tobiko","masago","ikura"]
 
-# ---------------- DB ----------------
-def init_db(path):
-    conn = sqlite3.connect(path, check_same_thread=False)
-    c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS prices(
-        id INTEGER PRIMARY KEY,
-        site TEXT, url TEXT, name TEXT, currency TEXT, price REAL,
-        size_g REAL, size_label TEXT, per_g REAL, seen_at TEXT
-    )""")
-    conn.commit()
-    return conn
-
-def store_prices(conn, items):
-    if not items: return
-    c=conn.cursor()
-    for it in items:
-        c.execute("""INSERT INTO prices(site,url,name,currency,price,size_g,size_label,per_g,seen_at)
-                     VALUES(?,?,?,?,?,?,?,?,?)""",
-                  (it["site"], it["url"], it["name"], it["currency"], it["price"],
-                   it["size_g"], it["size_label"], it["per_g"], datetime.utcnow().isoformat()))
-    conn.commit()
-
-def get_cheapest(conn, top_n=10):
-    c=conn.cursor()
-    c.execute("""SELECT site,name,price,currency,size_g,size_label,per_g,url
-                 FROM prices ORDER BY per_g ASC LIMIT ?""",(top_n,))
-    rows=c.fetchall()
-    return [{"site":r[0],"name":r[1],"price":r[2],"currency":r[3],
-             "size_g":r[4],"size_label":r[5],"per_g":r[6],"url":r[7]} for r in rows]
-
-def get_movers(conn):
-    c=conn.cursor()
-    c.execute("""
-      WITH ranked AS (
-        SELECT site,name,currency,price,size_label,seen_at,
-               ROW_NUMBER() OVER (PARTITION BY site,name ORDER BY seen_at DESC) AS rn
-        FROM prices)
-      SELECT a.site,a.name,a.currency,a.price,a.size_label,b.price
-      FROM ranked a LEFT JOIN ranked b
-      ON a.site=b.site AND a.name=b.name AND b.rn=2
-      WHERE a.rn=1 AND b.price IS NOT NULL
-    """)
-    out=[]
-    for site,name,cur,price,label,prev in c.fetchall():
-        if prev and price != prev:
-            delta=price-prev
-            pct=round((delta/prev)*100,2)
-            out.append({"site":site,"name":name,"currency":cur,"price":price,
-                        "delta_abs":abs(delta),"delta_pct":pct,"delta_sign":"+" if delta>0 else "-",
-                        "size_label":label})
-    return sorted(out, key=lambda x: -abs(x["delta_pct"]))[:5]
-
-# ---------------- Helpers ----------------
 def parse_size(text):
     m = SIZE_RE.search(text or "")
     if not m: return None, None
     val, unit = float(m.group(1)), m.group(2).lower()
     grams = val * 28.3495 if unit.startswith('oz') else val
-    label = f"{int(val) if val.is_integer() else val}{unit}"
-    return grams, label
+    label_raw = f"{int(val) if val.is_integer() else val}{unit}"
+    return grams, label_raw
+
+def grams_to_label_both(size_g, packaging=None):
+    if not size_g: return None
+    g = int(round(size_g))
+    oz = size_g / 28.3495
+    # Make ounces pretty (1, 1.5, 2.0 etc.)
+    oz_round_int = round(oz)
+    if abs(oz - oz_round_int) < 0.05:
+        oz_str = f"{int(oz_round_int)} oz"
+    else:
+        oz_str = f"{oz:.1f} oz".rstrip('0').rstrip('.') + " oz"
+    label = f"{oz_str} / {g} g"
+    if packaging:
+        label += f" {packaging}"
+    return label
+
+def infer_packaging(text):
+    t = (text or "").lower()
+    if "tin" in t: return "tin"
+    if "jar" in t: return "jar"
+    # sometimes “30g” implies a tin; don’t force a guess if not present
+    return None
+
+def looks_like_accessory(text):
+    t = (text or "").lower()
+    return any(w in t for w in EXCLUDE_WORDS)
+
+def contains_non_caviar_roe(text):
+    t = (text or "").lower()
+    return any(w in t for w in NON_CAVIAR_ROE)
+
+def is_valid_caviar_tinjar(name, page_text):
+    """
+    True caviar product, not accessories/gifts, and presented as a tin/jar (or at least has a size).
+    """
+    nm = (name or "").lower()
+    pg = (page_text or "").lower()
+    if not CAVIAR_WORD.search(nm + " " + pg):
+        return False
+    if looks_like_accessory(nm) or looks_like_accessory(pg):
+        return False
+    if contains_non_caviar_roe(nm) or contains_non_caviar_roe(pg):
+        return False
+    # Must be described as tin/jar OR have a parseable size on the page
+    pack = infer_packaging(nm) or infer_packaging(pg)
+    size_g, _ = parse_size(nm + " " + pg)
+    return bool(pack or size_g)
 
 def norm_price_currency(text):
     m = MONEY_RE.search(text or "")
@@ -118,7 +130,7 @@ def robots_allowed(url):
         rp.set_url(urljoin(base, "/robots.txt")); rp.read()
         return rp.can_fetch("*", url)
     except Exception:
-        return True
+        return True  # if robots can't be read, be permissive
 
 def extract_ld_json_products(soup):
     items=[]
@@ -145,8 +157,75 @@ def extract_ld_json_products(soup):
                 items.append({"name":name, "price":price, "currency":currency, "desc":desc})
     return items
 
-# ---------------- Scraper core ----------------
+# =========================
+# Database
+# =========================
+def init_db(path):
+    conn = sqlite3.connect(path, check_same_thread=False)
+    c = conn.cursor()
+    c.execute("""CREATE TABLE IF NOT EXISTS prices(
+        id INTEGER PRIMARY KEY,
+        site TEXT, url TEXT, name TEXT, currency TEXT, price REAL,
+        size_g REAL, size_label TEXT, per_g REAL, seen_at TEXT
+    )""")
+    # Keep the news table for future use (not required for price digest)
+    c.execute("""CREATE TABLE IF NOT EXISTS news(
+        id TEXT PRIMARY KEY, title TEXT, url TEXT, published_at TEXT,
+        source TEXT, summary TEXT, category TEXT, seen_at TEXT
+    )""")
+    conn.commit()
+    return conn
+
+def store_prices(conn, items):
+    if not items: return
+    c=conn.cursor()
+    for it in items:
+        c.execute("""INSERT INTO prices(site,url,name,currency,price,size_g,size_label,per_g,seen_at)
+                     VALUES(?,?,?,?,?,?,?,?,?)""",
+                  (it["site"], it["url"], it["name"], it["currency"], it["price"],
+                   it["size_g"], it["size_label"], it["per_g"], datetime.utcnow().isoformat()))
+    conn.commit()
+
+def get_cheapest(conn, top_n=10):
+    c=conn.cursor()
+    c.execute("""SELECT site,name,price,currency,size_g,size_label,per_g,url
+                 FROM prices ORDER BY per_g ASC LIMIT ?""",(top_n,))
+    rows=c.fetchall()
+    return [{"site":r[0],"name":r[1],"price":r[2],"currency":r[3],
+             "size_g":r[4],"size_label":r[5],"per_g":r[6],"url":r[7]} for r in rows]
+
+def get_movers(conn):
+    # Compare latest vs previous for same (site,name)
+    c=conn.cursor()
+    c.execute("""
+      WITH ranked AS (
+        SELECT site,name,currency,price,size_label,seen_at,
+               ROW_NUMBER() OVER (PARTITION BY site,name ORDER BY seen_at DESC) AS rn
+        FROM prices)
+      SELECT a.site,a.name,a.currency,a.price,a.size_label,b.price
+      FROM ranked a LEFT JOIN ranked b
+      ON a.site=b.site AND a.name=b.name AND b.rn=2
+      WHERE a.rn=1 AND b.price IS NOT NULL
+    """)
+    out=[]
+    for site,name,cur,price,label,prev in c.fetchall():
+        if prev and price != prev:
+            delta=price-prev
+            pct=round((delta/prev)*100,2)
+            out.append({"site":site,"name":name,"currency":cur,"price":price,
+                        "delta_abs":abs(delta),"delta_pct":pct,"delta_sign":"+" if delta>0 else "-",
+                        "size_label":label})
+    return sorted(out, key=lambda x: -abs(x["delta_pct"]))[:5]
+
+# =========================
+# Scraper Core
+# =========================
 def scrape_product_page(url, site_selectors=None):
+    """
+    Extract one or more products from a product page.
+    Prefers JSON-LD; falls back to common HTML selectors and meta tags.
+    Enforces: caviar-only, tins/jars only, shows oz + g.
+    """
     if not robots_allowed(url): 
         print("ROBOTS disallow:", url)
         return []
@@ -155,50 +234,61 @@ def scrape_product_page(url, site_selectors=None):
         print("GET failed:", url)
         return []
     soup = BeautifulSoup(r.text, "lxml")
+    page_text = soup.get_text(" ", strip=True)
+
     out = []
     page_title = (soup.title.string if soup.title else "") or ""
     h1 = soup.find("h1")
     h1_text = h1.get_text(strip=True) if h1 else ""
+
+    # 1) JSON-LD first
     for p in extract_ld_json_products(soup):
-        size_g, size_label = parse_size(p["name"] + " " + p.get("desc",""))
-        price = p["price"]
+        name = (p.get("name") or "").strip() or h1_text or page_title
+        if not name:
+            continue
+        if not is_valid_caviar_tinjar(name, page_text):
+            continue
+        size_g, _ = parse_size(name + " " + (p.get("desc") or "") + " " + page_text)
+        price = p.get("price")
         if price is None:
-            cur, price = norm_price_currency(soup.get_text(" "))
+            cur, price = norm_price_currency(page_text)
         else:
-            cur = p["currency"] or "USD"
-        name = p["name"] or h1_text or page_title
-        if not name or not CAVIAR_WORD.search(name.lower()): continue
-        if not size_g or not price:
-            if not size_g: size_g, size_label = parse_size(soup.get_text(" "))
-            if not price: cur, price = norm_price_currency(soup.get_text(" "))
-        if not (size_g and price): continue
-        out.append({"name": name, "price": price, "currency": cur,
-                    "size_g": size_g, "size_label": size_label or "n/a",
-                    "per_g": price/size_g, "url": url})
+            cur = p.get("currency") or "USD"
+        if not (size_g and price):
+            continue
+        pack = infer_packaging(name) or infer_packaging(page_text)
+        size_label = grams_to_label_both(size_g, packaging=pack)
+        out.append({
+            "name": name, "price": price, "currency": cur,
+            "size_g": size_g, "size_label": size_label or "n/a",
+            "per_g": price/size_g, "url": url
+        })
+
+    # 2) Fallback: selectors/meta
     if not out:
         name = h1_text or page_title
         price = None; currency = "USD"
+
         try_selectors=[]
         if site_selectors:
             if site_selectors.get("price"): try_selectors.append(site_selectors["price"])
             if site_selectors.get("name") and not name:
                 n = soup.select_one(site_selectors["name"])
                 if n: name = n.get_text(strip=True)
+
         try_selectors += [
             "[itemprop='price']", ".price-item--regular", ".price", ".product-price",
             "meta[property='og:price:amount']::attr(content)",
             "meta[name='twitter:data1']::attr(content)", "[data-price]"
         ]
+
         for sel in try_selectors:
             node=None; attr=None
             if "::attr(" in sel:
                 css, attr = sel.split("::attr(")
                 attr = attr.replace(")","").strip()
                 node = soup.select_one(css.strip())
-                if node and node.has_attr(attr):
-                    val = node[attr]
-                else:
-                    val=None
+                val = node[attr] if (node and node.has_attr(attr)) else None
             else:
                 node = soup.select_one(sel)
                 val = node.get_text(" ", strip=True) if node else None
@@ -206,56 +296,102 @@ def scrape_product_page(url, site_selectors=None):
                 cur, maybe_price = norm_price_currency(val)
                 if maybe_price:
                     price = maybe_price; currency = cur; break
-        size_g, size_label = parse_size((name or "") + " " + soup.get_text(" "))
-        if name and CAVIAR_WORD.search(name.lower()) and price and size_g:
-            out.append({"name": name, "price": price, "currency": currency,
-                        "size_g": size_g, "size_label": size_label or "n/a",
-                        "per_g": price/size_g, "url": url})
+
+        # Validate & build only if it's a caviar tin/jar and we have size+price
+        if name and is_valid_caviar_tinjar(name, page_text):
+            size_g, _ = parse_size(name + " " + page_text)
+            if price and size_g:
+                pack = infer_packaging(name) or infer_packaging(page_text)
+                size_label = grams_to_label_both(size_g, packaging=pack)
+                out.append({
+                    "name": name, "price": price, "currency": currency,
+                    "size_g": size_g, "size_label": size_label or "n/a",
+                    "per_g": price/size_g, "url": url
+                })
+
     return out
 
-def crawl_site(site):
+
+def crawl_site(site, deadline=None):
+    """
+    Crawl a site's category/start URLs; discover product links; visit them; return parsed products.
+    Respects optional selectors from YAML: product_link, name, price.
+    Stops early if 'deadline' is reached.
+    """
     results=[]
     start_urls = site.get("start_urls",[])
     sel = site.get("selectors",{}) or {}
     domain_whitelist = set(site.get("allow_domains") or [])
     site_name = site.get("name") or (domain_whitelist and next(iter(domain_whitelist))) or "site"
+
+    def timed_out():
+        return bool(deadline and datetime.utcnow() >= deadline)
+
     for start in start_urls:
+        if timed_out():
+            print(f"[{site_name}] timebox reached before fetching start url.")
+            break
+
         r = safe_get(start)
         if not (r and r.ok):
             print("START failed:", start)
             continue
         soup = BeautifulSoup(r.text, "lxml")
+
+        # Gather candidate product links
         links=set()
+
+        # 1) Site-provided selector
         if sel.get("product_link"):
             for a in soup.select(sel["product_link"]):
-                href=a.get("href"); 
+                href=a.get("href")
                 if not href: continue
                 full=urljoin(start, href)
-                if domain_whitelist and urlparse(full).netloc not in domain_whitelist: continue
+                if domain_whitelist and urlparse(full).netloc not in domain_whitelist: 
+                    continue
                 links.add(full)
+
+        # 2) Heuristic fallback
         for a in soup.find_all("a", href=True):
-            href=a["href"].lower()
-            if any(x in href for x in ["product","products","/p/","/item/","caviar"]):
+            href=a["href"]
+            lower=href.lower()
+            if any(x in lower for x in ["product","products","/p/","/prod/","/item/","/collections/","/collection/","/shop/","/store/","caviar"]):
                 full=urljoin(start, href)
-                if domain_whitelist and urlparse(full).netloc not in domain_whitelist: continue
+                if domain_whitelist and urlparse(full).netloc not in domain_whitelist:
+                    continue
                 links.add(full)
-        links_list=list(links)[:80]
+
+        links_list = list(links)[:MAX_LINKS_PER_SITE]  # cap per site
         print(f"[{site_name}] found {len(links_list)} product-ish links on {start}")
+
+        # Visit each product link
         kept=0
         for url in links_list:
+            if timed_out():
+                print(f"[{site_name}] timebox reached mid-site. Stopping.")
+                break
             prods = scrape_product_page(url, site_selectors=sel)
             for p in prods:
                 p["site"]=site_name
-                results.append(p); kept+=1
+                results.append(p)
+                kept+=1
+
         print(f"[{site_name}] kept {kept} products from {start}")
-        time.sleep(0.5)
+        time.sleep(0.5)  # politeness delay
+        if timed_out():
+            break
+
     return results
 
-# ---------------- Email render/send ----------------
+# =========================
+# Email render/send
+# =========================
 def render_html(cheapest, movers, news_items):
     tpl = env.get_template("digest_template.html")
-    return tpl.render(date=datetime.utcnow().strftime("%B %d, %Y"),
-                      cheapest=cheapest, movers=movers, news_items=news_items)
+    return tpl.render(
+        date=datetime.utcnow().strftime("%B %d, %Y"),
+        cheapest=cheapest, movers=movers, news_items=news_items
+    )
 
 def send_email_html(subject, html_body):
     if not (SENDGRID_API_KEY and FROM_EMAIL and TO_EMAIL):
@@ -276,9 +412,12 @@ def send_email_html(subject, html_body):
         print("SENDGRID ERROR:", e)
         print(traceback.format_exc())
 
-# ---------------- Main ----------------
+# =========================
+# Main
+# =========================
 def main():
     try:
+        # Test mode: send email immediately (no scraping)
         if SEND_TEST == "1":
             print("SEND_TEST=1 — sending a simple test email now.")
             html = "<h1>Test email from Caviar Agent</h1><p>If you see this, SendGrid works.</p>"
@@ -287,6 +426,7 @@ def main():
             print("Done with test mode.")
             return
 
+        # Single-page debug scrape
         if DEBUG_URL:
             print("DEBUG_URL set — scraping just this page:", DEBUG_URL)
             prods = scrape_product_page(DEBUG_URL)
@@ -297,8 +437,17 @@ def main():
             print("ERROR: SendGrid vars not set.")
             return
 
-        print("Starting run at", datetime.utcnow().isoformat())
+        # ---- Timebox setup ----
+        start = datetime.utcnow()
+        deadline = start + timedelta(seconds=RUN_LIMIT_SECONDS)
+
+        def time_left():
+            return max(0, (deadline - datetime.utcnow()).total_seconds())
+
+        print(f"Starting run at {start.isoformat()} (timebox {RUN_LIMIT_SECONDS}s)")
         conn = init_db(DB_PATH)
+
+        # Load sellers
         seed_path = os.path.join(os.path.dirname(__file__), "price_sites.yaml")
         try:
             with open(seed_path, "r") as f:
@@ -308,13 +457,17 @@ def main():
             print("No price_sites.yaml found or unreadable:", e)
             cfg = {"sites": []}
 
+        # Crawl within timebox
         all_prices=[]
         for site in cfg.get("sites", []):
-            print("Crawling:", site.get("name"))
-            items=crawl_site(site)
+            if time_left() <= 3:
+                print("Global timebox reached before starting next site.")
+                break
+            print(f"Crawling: {site.get('name')} (time left ≈ {int(time_left())}s)")
+            items = crawl_site(site, deadline=deadline)
             print(f" -> {len(items)} products from {site.get('name')}")
             all_prices.extend(items)
-            time.sleep(0.5)
+            time.sleep(0.2)
 
         if all_prices:
             store_prices(conn, all_prices)
@@ -322,14 +475,19 @@ def main():
         else:
             print("No prices found this run.")
 
-        cheapest=get_cheapest(conn, top_n=10)
-        movers=get_movers(conn)
-        news_items=[]
-        html_body=render_html(cheapest, movers, news_items)
-        subject=f"Daily Caviar Digest — {datetime.utcnow().strftime('%b %d, %Y')}"
+        # Build digest (news optional: disabled here for focus on price)
+        cheapest = get_cheapest(conn, top_n=10)
+        movers = get_movers(conn)
+        news_items = []  # or fetch_news(...) if you want to add it back
+
+        print(f"Digest sections -> cheapest:{len(cheapest)} movers:{len(movers)} news:{len(news_items)}")
+
+        # Email (always send whatever we have so far)
+        html_body = render_html(cheapest, movers, news_items)
+        subject = f"Daily Caviar Digest — {datetime.utcnow().strftime('%b %d, %Y')}"
         print("Sending email to:", TO_EMAIL)
         send_email_html(subject, html_body)
-        print("Done.")
+        print("Done. Total runtime ~", int((datetime.utcnow() - start).total_seconds()), "seconds")
     except Exception as e:
         import traceback
         print("FATAL ERROR:", e)
