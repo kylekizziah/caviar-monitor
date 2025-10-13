@@ -32,3 +32,4 @@ It can summarize new articles and send you a **daily email digest**.
 ---
 
 © 2025 Caviar Monitor Project
+
