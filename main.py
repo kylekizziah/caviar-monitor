@@ -23,11 +23,12 @@ DB_PATH = os.getenv("DB_PATH", "caviar_agent.db")
 
 # keep runs short so an email always goes out
 RUN_LIMIT_SECONDS  = int(os.getenv("RUN_LIMIT_SECONDS", "150"))
-MAX_LINKS_PER_SITE = int(os.getenv("MAX_LINKS_PER_SITE", "40"))
+MAX_LINKS_PER_SITE = int(os.getenv("MAX_LINKS_PER_SITE", "50"))
 
 # handy toggles
-SEND_TEST = os.getenv("SEND_TEST")   # "1" = send test email then exit
-DEBUG_URL = os.getenv("DEBUG_URL")   # scrape one URL then exit
+SEND_TEST        = os.getenv("SEND_TEST")           # "1" = send test email then exit
+DEBUG_URL        = os.getenv("DEBUG_URL")           # scrape one URL then exit
+REQUIRE_SPECIES  = int(os.getenv("REQUIRE_SPECIES", "1"))  # 1=require, 0=allow missing (for testing)
 
 # templates
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), 'templates')
@@ -41,7 +42,6 @@ CAVIAR_WORD = re.compile(r"\bcaviar\b", re.I)
 SIZE_RE     = re.compile(r'(\d+(?:\.\d+)?)\s*(g|gram|grams|oz|ounce|ounces)\b', re.I)
 MONEY_RE    = re.compile(r'([$\£\€])\s*([0-9]+(?:\.[0-9]{1,2})?)')
 
-# exclude accessories/gifts/subscriptions/etc.
 EXCLUDE_WORDS = [
     "gift set","giftset","set","bundle","sampler","flight","pairing","experience","kit",
     "accessory","accessories","spoon","mother of pearl","key","opener","tin opener",
@@ -50,12 +50,10 @@ EXCLUDE_WORDS = [
     "club","subscription","subscribe","duo","trio","quad","pack","2-pack","3-pack","4-pack",
     "class","tasting","pair","pairings","collection","assortment","starter"
 ]
-# non-sturgeon & fish roe to exclude
 NON_STURGEON_ROE = [
     "salmon roe","trout roe","whitefish roe","tobiko","masago","ikura","capelin roe",
-    "lumpfish", "flying fish roe", "bowfin", "paddlefish", "hackleback roe"  # bowfin, paddlefish not sturgeon
+    "lumpfish", "flying fish roe", "bowfin", "paddlefish", "hackleback roe"
 ]
-# We *allow* Hackleback (Scaphirhynchus platorynchus) if explicitly identified as sturgeon; exclude the generic "hackleback roe"
 ALLOW_HACKLEBACK_STURGEON = True
 
 URL_BLOCKLIST = [
@@ -63,22 +61,39 @@ URL_BLOCKLIST = [
     "/pages/contact", "/pages/faq", "/pages/shipping", "/pages/returns",
     "/privacy", "/terms", "/checkout"
 ]
-# common single-tin sizes (grams)
 LIKELY_TIN_SIZES_G = [28,30,50,56,57,85,100,114,125,180,200,250,500,1000]
 
 # Species patterns: (pattern, normalized common, latin)
 SPECIES_PATTERNS = [
     (r"\bbeluga\b|\bhuso\s*huso\b", "Beluga", "Huso huso"),
     (r"\bkaluga\b|\bhuso\s*dauricus\b", "Kaluga", "Huso dauricus"),
-    (r"\bossetra\b|\bosetra\b|\bosetra\b|\bgueldenstaedtii\b|\bacipenser\s*gueldenstaedtii\b", "Osetra", "Acipenser gueldenstaedtii"),
+    (r"\bosc?ietr?a\b|\bossetra\b|\bgueldenstaedtii\b|\bacipenser\s*gueldenstaedtii\b", "Osetra", "Acipenser gueldenstaedtii"),
     (r"\bsevruga\b|\bacipenser\s*stellatus\b|\bstellatus\b", "Sevruga", "Acipenser stellatus"),
     (r"\bsiberian\b|\ba\.?\s*baerii\b|\bacipenser\s*baerii\b|\bbaerii\b", "Siberian", "Acipenser baerii"),
     (r"\bwhite\s*sturgeon\b|\ba\.?\s*transmontanus\b|\bacipenser\s*transmontanus\b|\btransmontanus\b", "White Sturgeon", "Acipenser transmontanus"),
     (r"\bsterlet\b|\bacipenser\s*ruthenus\b|\bruthenus\b", "Sterlet", "Acipenser ruthenus"),
     (r"\bhackleback\b|\bshovelnose\b|\bscaphirhynchus\s*platorynchus\b", "Hackleback", "Scaphirhynchus platorynchus"),
 ]
+ALLOWED_SPECIES = {s[1] for s in SPECIES_PATTERNS}
 
-ALLOWED_SPECIES = {s[1] for s in SPECIES_PATTERNS}  # normalized names
+# Origin patterns (coarse)
+ORIGIN_PATTERNS = [
+    (r"\busa\b|\bunited states\b|\bcalifornia\b|\bidaho\b|\bmontana\b", "USA"),
+    (r"\buruguay\b|\brivera\b", "Uruguay"),
+    (r"\bitaly\b|\bitalian\b", "Italy"),
+    (r"\bfrance\b|\bfrench\b|\bgironde\b", "France"),
+    (r"\bgermany\b|\bgerman\b", "Germany"),
+    (r"\bpoland\b|\bpolish\b", "Poland"),
+    (r"\bbulgaria\b|\bbulgarian\b", "Bulgaria"),
+    (r"\bisrael\b|\bisraeli\b", "Israel"),
+    (r"\bchina\b|\bchinese\b|\bheilongjiang\b", "China"),
+    (r"\brussia\b|\brussian\b", "Russia"),
+    (r"\bbelgium\b|\bbelgian\b", "Belgium"),
+    (r"\bromania\b|\bromanian\b", "Romania"),
+    (r"\bcanada\b|\bcanadian\b", "Canada"),
+    (r"\biran\b|\biranian\b", "Iran"),
+    (r"\bmadagascar\b", "Madagascar"),
+]
 
 def norm_netloc(host: str) -> str:
     host = host or ""
@@ -95,12 +110,16 @@ def init_db(path):
         site TEXT, url TEXT, name TEXT, currency TEXT, price REAL,
         size_g REAL, size_label TEXT, per_g REAL, seen_at TEXT
     )""")
-    # Add species cols if missing
+    # Add new columns if missing
     cols = {row[1] for row in c.execute("PRAGMA table_info(prices)").fetchall()}
     if "species" not in cols:
         c.execute("ALTER TABLE prices ADD COLUMN species TEXT")
     if "species_latin" not in cols:
         c.execute("ALTER TABLE prices ADD COLUMN species_latin TEXT")
+    if "origin_country" not in cols:
+        c.execute("ALTER TABLE prices ADD COLUMN origin_country TEXT")
+    if "origin_notes" not in cols:
+        c.execute("ALTER TABLE prices ADD COLUMN origin_notes TEXT")
     conn.commit()
     return conn
 
@@ -108,71 +127,76 @@ def store_prices(conn, items):
     if not items: return
     c = conn.cursor()
     for it in items:
-        c.execute("""INSERT INTO prices(site,url,name,currency,price,size_g,size_label,per_g,seen_at,species,species_latin)
-                     VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        c.execute("""INSERT INTO prices(site,url,name,currency,price,size_g,size_label,per_g,seen_at,species,species_latin,origin_country,origin_notes)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                   (it["site"], it["url"], it["name"], it["currency"], it["price"],
                    it["size_g"], it["size_label"], it["per_g"], datetime.utcnow().isoformat(),
-                   it.get("species"), it.get("species_latin")))
+                   it.get("species"), it.get("species_latin"), it.get("origin_country"), it.get("origin_notes")))
     conn.commit()
 
 def get_cheapest(conn, top_n=12):
     """
-    Cheapest CURRENT options, de-duplicated, species-required:
+    Cheapest CURRENT options, de-duplicated, species-required (unless REQUIRE_SPECIES=0):
       1) Keep latest per (site, url, size_g)
-      2) Collapse to lowest per-g for (site, name, size_g, species)
+      2) Collapse to lowest per-g for (site, name, size_g, species, origin_country)
       3) Sort by $/g asc, limit N
     """
     c = conn.cursor()
-    c.execute("""
+    where_species = "" if REQUIRE_SPECIES == 0 else "WHERE species IS NOT NULL AND species <> ''"
+    q = f"""
       WITH latest AS (
-        SELECT site,name,url,currency,price,size_g,size_label,per_g,seen_at,species,species_latin,
+        SELECT site,name,url,currency,price,size_g,size_label,per_g,seen_at,species,species_latin,origin_country,origin_notes,
                ROW_NUMBER() OVER (
                  PARTITION BY site, url, size_g
                  ORDER BY datetime(seen_at) DESC
                ) rn
         FROM prices
-        WHERE species IS NOT NULL AND species <> ''
+        {where_species}
       ),
       dedup AS (
-        SELECT site,name,url,currency,price,size_g,size_label,per_g,species,species_latin
+        SELECT site,name,url,currency,price,size_g,size_label,per_g,species,species_latin,origin_country,origin_notes
         FROM latest WHERE rn=1
       ),
       collapsed AS (
         SELECT
-          site, name, currency, size_g, size_label, species, species_latin,
+          site, name, currency, size_g, size_label, species, species_latin, origin_country, origin_notes,
           MIN(price) AS price,
           MIN(per_g) AS per_g,
           MIN(url)   AS url
         FROM dedup
-        GROUP BY site, name, size_g, size_label, currency, species, species_latin
+        GROUP BY site, name, size_g, size_label, currency, species, species_latin, origin_country, origin_notes
       )
-      SELECT site,name,price,currency,size_g,size_label,per_g,url,species,species_latin
+      SELECT site,name,price,currency,size_g,size_label,per_g,url,species,species_latin,origin_country,origin_notes
       FROM collapsed
       ORDER BY per_g ASC
       LIMIT ?
-    """, (top_n,))
-    rows = c.fetchall()
-    return [{"site":r[0],"name":r[1],"price":r[2],"currency":r[3],
-             "size_g":r[4],"size_label":r[5],"per_g":r[6],"url":r[7],
-             "species":r[8],"species_latin":r[9]} for r in rows]
+    """
+    rows = c.execute(q, (top_n,)).fetchall()
+    return [{
+        "site": r[0], "name": r[1], "price": r[2], "currency": r[3],
+        "size_g": r[4], "size_label": r[5], "per_g": r[6], "url": r[7],
+        "species": r[8], "species_latin": r[9],
+        "origin_country": r[10], "origin_notes": r[11]
+    } for r in rows]
 
 def get_movers(conn):
     c = conn.cursor()
-    c.execute("""
+    where_species = "" if REQUIRE_SPECIES == 0 else "WHERE species IS NOT NULL AND species <> ''"
+    q = f"""
       WITH ranked AS (
         SELECT site,name,currency,price,size_label,seen_at,
                ROW_NUMBER() OVER (PARTITION BY site,name ORDER BY datetime(seen_at) DESC) rn
         FROM prices
-        WHERE species IS NOT NULL AND species <> ''
+        {where_species}
       )
       SELECT a.site,a.name,a.currency,a.price,a.size_label,b.price
       FROM ranked a
       LEFT JOIN ranked b
         ON a.site=b.site AND a.name=b.name AND b.rn=2
       WHERE a.rn=1 AND b.price IS NOT NULL
-    """)
+    """
     out=[]
-    for site,name,cur,price,label,prev in c.fetchall():
+    for site,name,cur,price,label,prev in c.execute(q).fetchall():
         if prev and price != prev:
             delta=price-prev
             pct=round((delta/prev)*100,2)
@@ -206,7 +230,7 @@ def safe_get(url, timeout=20):
         return None
 
 # =========================
-# Species & parsing helpers
+# Species & origin helpers
 # =========================
 def parse_size(text):
     m = SIZE_RE.search(text or "")
@@ -240,7 +264,6 @@ def looks_like_accessory(text):
 def contains_non_sturgeon_or_roe(text):
     t = (text or "").lower()
     if any(w in t for w in NON_STURGEON_ROE):
-        # allow explicit sturgeon hackleback if requested
         if ALLOW_HACKLEBACK_STURGEON and ("hackleback" in t and "sturgeon" in t):
             return False
         return True
@@ -258,8 +281,45 @@ def extract_species_any(text):
             return common, latin
     return None, None
 
+def extract_origin_any(text):
+    t = (text or "").lower()
+    for pat, country in ORIGIN_PATTERNS:
+        if re.search(pat, t, re.I):
+            return country, None
+    m = re.search(r"(raised|farmed|produced|harvested)\s+in\s+([A-Za-z ]{3,30})", t)
+    if m:
+        return m.group(2).strip().title(), m.group(0)
+    return None, None
+
+def extract_from_metas(soup):
+    texts=[]
+    for sel in [
+        "meta[name='description']",
+        "meta[property='og:description']",
+        "meta[name='keywords']",
+        "meta[property='product:retailer_item_id']",
+    ]:
+        tag = soup.select_one(sel)
+        if tag:
+            for attr in ("content","value"):
+                if tag.has_attr(attr) and tag[attr]:
+                    texts.append(tag[attr])
+    return " ".join(texts)
+
+def extract_from_feature_blocks(soup):
+    # Tables, definition lists, bullet lists often contain "Species", "Origin", "Type"
+    chunks=[]
+    for table in soup.select("table"):
+        chunks.append(table.get_text(" ", strip=True))
+    for dl in soup.select("dl"):
+        chunks.append(dl.get_text(" ", strip=True))
+    for li in soup.select("ul li, ol li"):
+        chunks.append(li.get_text(" ", strip=True))
+    for div in soup.select("[class*='spec'],[class*='feature'],[class*='attribute'],[class*='details']"):
+        chunks.append(div.get_text(" ", strip=True))
+    return " ".join(chunks)
+
 def extract_species_from_json_ld(soup):
-    # Some stores put species in description or additionalProperty
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(tag.string or "{}")
@@ -268,12 +328,31 @@ def extract_species_from_json_ld(soup):
         items = data if isinstance(data, list) else [data]
         for it in items:
             if not isinstance(it, dict): continue
-            desc = (it.get("description") or "") + " " + " ".join(
-                [str(ap.get("value","")) for ap in (it.get("additionalProperty") or []) if isinstance(ap, dict)]
-            )
-            sp = extract_species_any(desc)
+            desc = (it.get("description") or "")
+            extras = " ".join([str(ap.get("value","")) for ap in (it.get("additionalProperty") or []) if isinstance(ap, dict)])
+            sp = extract_species_any(desc + " " + extras)
             if sp[0]: return sp
     return (None, None)
+
+def extract_origin_from_json_ld(soup):
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(tag.string or "{}")
+        except Exception:
+            continue
+        items = data if isinstance(data, list) else [data]
+        for it in items:
+            if not isinstance(it, dict): continue
+            addr = ""
+            man  = it.get("manufacturer") or it.get("brand") or {}
+            if isinstance(man, dict):
+                addr = " ".join([
+                    str((man.get("address") or {}).get(k,"")) for k in ("addressCountry","addressLocality","addressRegion")
+                ])
+            extras = " ".join([str(ap.get("value","")) for ap in (it.get("additionalProperty") or []) if isinstance(ap, dict)])
+            country, notes = extract_origin_any((it.get("description") or "") + " " + addr + " " + extras)
+            if country: return country, notes
+    return None, None
 
 def ensure_sturgeon_species(species_common):
     return species_common in ALLOWED_SPECIES
@@ -303,7 +382,6 @@ def size_tokens(size_g):
     return {t.lower() for t in tokens}
 
 def extract_ld_json_products_extended(soup):
-    """Return list of {name, desc, offers:[{price, currency, name?, sku?}], extra_text}"""
     items=[]
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
@@ -376,37 +454,46 @@ def extract_wc_variations(soup):
             results.append({"price": float(price), "currency":"USD", "label":label, "size_g": float(size_g)})
     return results
 
-# -------- Shopify variants --------
-def extract_shopify_variants(soup):
-    """
-    Shopify exposes product JSON in <script type="application/json"> with "variants".
-    Each variant has "title" (often '30g' or '1 oz') and "price" in cents.
-    """
+# -------- Shopify variants + product JSON (tags/options/vendor) --------
+def extract_shopify_variants_and_tags(soup):
     results=[]
+    extra_texts=[]
     for tag in soup.find_all("script", type="application/json"):
         txt = tag.string or ""
-        if not txt or '"variants"' not in txt:
+        if not txt:
+            continue
+        # product JSON blocks often include "variants" and "tags"
+        if '"variants"' not in txt and '"tags"' not in txt and '"options"' not in txt:
             continue
         try:
             data = json.loads(txt)
         except Exception:
             continue
-        variants = data.get("variants") if isinstance(data, dict) else None
-        if not isinstance(variants, list):
-            continue
-        for v in variants:
-            title = str(v.get("title") or "").strip()
-            size_g, _ = parse_size(title)
-            if not size_g:
-                continue
-            price_cents = v.get("price")
-            if price_cents is None:
-                continue
-            price = float(price_cents)/100.0
-            if not any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G):
-                continue
-            results.append({"price": price, "currency": "USD", "label": title, "size_g": float(size_g)})
-    return results
+        # If this is the product object
+        if isinstance(data, dict):
+            # collect tags/options/vendor for species detection
+            for key in ("tags","options","vendor","type"):
+                val = data.get(key)
+                if isinstance(val, list):
+                    extra_texts.append(" ".join([str(x) for x in val]))
+                elif isinstance(val, str):
+                    extra_texts.append(val)
+            # variants
+            variants = data.get("variants")
+            if isinstance(variants, list):
+                for v in variants:
+                    title = str(v.get("title") or "").strip()
+                    size_g, _ = parse_size(title)
+                    if not size_g:
+                        continue
+                    price_cents = v.get("price")
+                    if price_cents is None:
+                        continue
+                    price = float(price_cents)/100.0
+                    if not any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G):
+                        continue
+                    results.append({"price": price, "currency": "USD", "label": title, "size_g": float(size_g)})
+    return results, " ".join(extra_texts)
 
 # -------- Magento price/variant helpers (basic) --------
 def extract_magento_price_and_sizes(soup):
@@ -433,7 +520,8 @@ def extract_magento_price_and_sizes(soup):
 def scrape_product_page(url, site_selectors=None):
     """
     Extract one or more products from an exact product URL.
-    Requires species (sturgeon) and tin/jar with size+price.
+    Requires species (sturgeon) and tin/jar with size+price (unless REQUIRE_SPECIES=0).
+    Also extracts origin (country/region) where possible.
     """
     low = url.lower()
     if any(b in low for b in URL_BLOCKLIST): return []
@@ -453,30 +541,30 @@ def scrape_product_page(url, site_selectors=None):
     h1_text = h1.get_text(strip=True) if h1 else ""
     canonical_name = (h1_text or page_title).strip()
 
-    # species candidates from multiple places
-    sp_name, sp_latin = extract_species_any(canonical_name)
-    if not sp_name:
-        sp_name, sp_latin = extract_species_any(page_text)
+    # Collect extra text sources for species/origin
+    metas_text   = extract_from_metas(soup)
+    features_txt = extract_from_feature_blocks(soup)
+
+    # species (mandatory if REQUIRE_SPECIES=1)
+    sp_name, sp_latin = extract_species_any(" ".join([canonical_name, page_text, metas_text, features_txt]))
     if not sp_name:
         sp_name, sp_latin = extract_species_from_json_ld(soup)
 
-    # JSON-LD offers path
-    if not (sp_name and ensure_sturgeon_species(sp_name)):
-        # still try variants and then re-check species from page (some titles are generic)
-        pass
+    # origin (best effort)
+    origin_country, origin_notes = extract_origin_any(" ".join([canonical_name, page_text, metas_text, features_txt]))
+    if not origin_country:
+        origin_country, origin_notes = extract_origin_from_json_ld(soup)
 
-    # JSON-LD with variant match
+    # JSON-LD products (try first)
     for item in extract_ld_json_products_extended(soup):
         base_name = (item.get("name") or "").strip() or canonical_name
-        # try species on product-specific fields
-        if not (sp_name and sp_latin):
-            sp_name, sp_latin = extract_species_any(base_name + " " + item.get("desc",""))
-        if not (sp_name and ensure_sturgeon_species(sp_name)): 
-            continue
-        if not is_individual_tinjar(base_name, page_text, url=url): 
+        if not is_individual_tinjar(base_name, page_text, url=url):
+            # print for diagnostics
+            # print("Skip: not tin/jar", url)
             continue
         size_g, _ = parse_size(base_name + " " + (item.get("desc") or "") + " " + page_text)
-        if not size_g: 
+        if not size_g:
+            # print("Skip: no size", url)
             continue
         offer = choose_offer_for_size(item.get("offers"), size_g)
         price = offer.get("price") if offer else None
@@ -486,71 +574,93 @@ def scrape_product_page(url, site_selectors=None):
             if m:
                 currency = {'$':'USD','£':'GBP','€':'EUR'}.get(m.group(1),'USD')
                 price = float(m.group(2))
-        if not (size_g and price and currency): 
+        if not (size_g and price and currency):
+            # print("Skip: no price/currency", url)
             continue
+        # require species?
+        if REQUIRE_SPECIES == 1:
+            if not (sp_name and ensure_sturgeon_species(sp_name)):
+                # print("Skip: no/invalid species", url)
+                continue
         pack = infer_packaging(base_name) or infer_packaging(page_text)
         size_label = grams_to_label_both(size_g, packaging=pack)
-        name_with_species = f"{base_name} — {sp_name}"
-        out.append({"name":name_with_species,"price":float(price),"currency":currency,
-                    "size_g":float(size_g),"size_label":size_label or "n/a",
-                    "per_g":float(price)/float(size_g),"url":url,
-                    "species":sp_name, "species_latin":sp_latin})
-        # keep going; JSON-LD might include other sizes too
+        out.append({
+            "name": base_name, "price": float(price), "currency": currency,
+            "size_g": float(size_g), "size_label": size_label or "n/a",
+            "per_g": float(price)/float(size_g), "url": url,
+            "species": sp_name, "species_latin": sp_latin,
+            "origin_country": origin_country, "origin_notes": origin_notes
+        })
 
     # Platform variants (Shopify/WooCommerce/Magento)
     if not out and url_or_text_has_caviar(url, page_text):
-        # re-derive species if not found
-        if not (sp_name and sp_latin):
-            sp_name, sp_latin = extract_species_any(page_text)
-        if not (sp_name and sp_latin):
+        if not is_individual_tinjar(canonical_name, page_text, url=url):
+            # print("Skip: not tin/jar (platform branch)", url)
+            return []
+
+        # Shopify: variants + extra tags/options/vendor to improve species recall
+        shopify, shopify_extra = extract_shopify_variants_and_tags(soup)
+        combined_context = " ".join([page_text, metas_text, features_txt, shopify_extra])
+        if not sp_name:
+            sp_name, sp_latin = extract_species_any(combined_context)
+        if not sp_name:
             sp_name, sp_latin = extract_species_from_json_ld(soup)
-        if not (sp_name and ensure_sturgeon_species(sp_name)):
-            return []  # species required
+        if REQUIRE_SPECIES == 1 and not (sp_name and ensure_sturgeon_species(sp_name)):
+            # print("Skip: no/invalid species (Shopify)", url)
+            pass
+        else:
+            if shopify:
+                for v in shopify:
+                    pack = infer_packaging(canonical_name) or infer_packaging(page_text)
+                    size_label = grams_to_label_both(v["size_g"], packaging=pack)
+                    out.append({
+                        "name": canonical_name, "price": v["price"], "currency": v["currency"],
+                        "size_g": v["size_g"], "size_label": size_label or "n/a",
+                        "per_g": v["price"]/v["size_g"], "url": url,
+                        "species": sp_name, "species_latin": sp_latin,
+                        "origin_country": origin_country, "origin_notes": origin_notes
+                    })
 
-        added = False
-        # Shopify
-        shopify = extract_shopify_variants(soup)
-        if shopify:
-            for v in shopify:
-                if not any(abs(v["size_g"] - s) <= 2 for s in LIKELY_TIN_SIZES_G): continue
-                if not is_individual_tinjar(canonical_name, page_text, url=url): continue
-                pack = infer_packaging(canonical_name) or infer_packaging(page_text)
-                size_label = grams_to_label_both(v["size_g"], packaging=pack)
-                out.append({"name": f"{canonical_name} — {sp_name}",
-                            "price": v["price"], "currency": v["currency"],
-                            "size_g": v["size_g"], "size_label": size_label or "n/a",
-                            "per_g": v["price"]/v["size_g"], "url": url,
-                            "species": sp_name, "species_latin": sp_latin})
-                added = True
-        if not added:
+        # WooCommerce
+        if not out:
             wc = extract_wc_variations(soup)
-            for v in wc:
-                if not any(abs(v["size_g"] - s) <= 2 for s in LIKELY_TIN_SIZES_G): continue
-                if not is_individual_tinjar(canonical_name, page_text, url=url): continue
-                pack = infer_packaging(canonical_name) or infer_packaging(page_text)
-                size_label = grams_to_label_both(v["size_g"], packaging=pack)
-                out.append({"name": f"{canonical_name} — {sp_name}",
-                            "price": v["price"], "currency": v["currency"],
-                            "size_g": v["size_g"], "size_label": size_label or "n/a",
-                            "per_g": v["price"]/v["size_g"], "url": url,
-                            "species": sp_name, "species_latin": sp_latin})
-                added = True
-        if not added:
-            mag = extract_magento_price_and_sizes(soup)
-            for v in mag:
-                if not any(abs(v["size_g"] - s) <= 2 for s in LIKELY_TIN_SIZES_G): continue
-                if not is_individual_tinjar(canonical_name, page_text, url=url): continue
-                pack = infer_packaging(canonical_name) or infer_packaging(page_text)
-                size_label = grams_to_label_both(v["size_g"], packaging=pack)
-                out.append({"name": f"{canonical_name} — {sp_name}",
-                            "price": v["price"], "currency": v["currency"],
-                            "size_g": v["size_g"], "size_label": size_label or "n/a",
-                            "per_g": v["price"]/v["size_g"], "url": url,
-                            "species": sp_name, "species_latin": sp_latin})
+            if REQUIRE_SPECIES == 1 and not (sp_name and ensure_sturgeon_species(sp_name)):
+                # print("Skip: no/invalid species (WooCommerce)", url)
+                pass
+            else:
+                for v in wc:
+                    pack = infer_packaging(canonical_name) or infer_packaging(page_text)
+                    size_label = grams_to_label_both(v["size_g"], packaging=pack)
+                    out.append({
+                        "name": canonical_name, "price": v["price"], "currency": v["currency"],
+                        "size_g": v["size_g"], "size_label": size_label or "n/a",
+                        "per_g": v["price"]/v["size_g"], "url": url,
+                        "species": sp_name, "species_latin": sp_latin,
+                        "origin_country": origin_country, "origin_notes": origin_notes
+                    })
 
-    # Fallback disabled if species missing — species is mandatory
-    if not out:
-        return []
+        # Magento
+        if not out:
+            mag = extract_magento_price_and_sizes(soup)
+            if REQUIRE_SPECIES == 1 and not (sp_name and ensure_sturgeon_species(sp_name)):
+                # print("Skip: no/invalid species (Magento)", url)
+                pass
+            else:
+                for v in mag:
+                    pack = infer_packaging(canonical_name) or infer_packaging(page_text)
+                    size_label = grams_to_label_both(v["size_g"], packaging=pack)
+                    out.append({
+                        "name": canonical_name, "price": v["price"], "currency": v["currency"],
+                        "size_g": v["size_g"], "size_label": size_label or "n/a",
+                        "per_g": v["price"]/v["size_g"], "url": url,
+                        "species": sp_name, "species_latin": sp_latin,
+                        "origin_country": origin_country, "origin_notes": origin_notes
+                    })
+
+    # final guard: if REQUIRE_SPECIES=1 and we somehow added with missing species, purge
+    if REQUIRE_SPECIES == 1:
+        out = [p for p in out if p.get("species") and ensure_sturgeon_species(p["species"])]
+
     return out
 
 def crawl_site(site, deadline=None):
@@ -567,6 +677,7 @@ def crawl_site(site, deadline=None):
     def allowed(u):
         low=(u or "").lower()
         if any(b in low for b in URL_BLOCKLIST): return False
+        # favor product detail pages; collections often point to these
         return ("/products/" in low) or ("/product/" in low)
 
     for start in start_urls:
@@ -578,7 +689,6 @@ def crawl_site(site, deadline=None):
         soup = BeautifulSoup(r.text, "lxml")
         links=set()
 
-        # site selector
         if sel.get("product_link"):
             for a in soup.select(sel["product_link"]):
                 href=a.get("href")
@@ -586,7 +696,6 @@ def crawl_site(site, deadline=None):
                 full=urljoin(start, href)
                 if domain_ok(full) and allowed(full): links.add(full)
 
-        # heuristic
         for a in soup.find_all("a", href=True):
             full=urljoin(start, a["href"])
             if domain_ok(full) and allowed(full): links.add(full)
@@ -598,6 +707,10 @@ def crawl_site(site, deadline=None):
         for url in links_list:
             if timed_out(): print(f"[{site_name}] timebox mid-site."); break
             prods = scrape_product_page(url, site_selectors=sel)
+            if not prods:
+                # Diagnostic logging for why nothing kept from this URL
+                # print(f"[{site_name}] no keep: {url}")
+                pass
             for p in prods:
                 p["site"]=site_name; results.append(p); kept+=1
         print(f"[{site_name}] kept {kept} products from {start}")
@@ -609,10 +722,6 @@ def crawl_site(site, deadline=None):
 # Email
 # =========================
 def render_html(cheapest, movers):
-    # Append species to display if template doesn't have a species column
-    for it in cheapest:
-        if it.get("species") and " — " not in it["name"]:
-            it["name"] = f"{it['name']} — {it['species']}"
     tpl = env.get_template("digest_template.html")
     return tpl.render(
         date=datetime.utcnow().strftime("%B %d, %Y"),
@@ -651,7 +760,7 @@ def main():
         deadline = start + timedelta(seconds=RUN_LIMIT_SECONDS)
         def time_left(): return max(0, (deadline - datetime.utcnow()).total_seconds())
 
-        print(f"Starting run at {start.isoformat()} (timebox {RUN_LIMIT_SECONDS}s)")
+        print(f"Starting run at {start.isoformat()} (timebox {RUN_LIMIT_SECONDS}s, REQUIRE_SPECIES={REQUIRE_SPECIES})")
         conn = init_db(DB_PATH)
 
         # Load sites
