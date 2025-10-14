@@ -89,22 +89,61 @@ def store_prices(conn, items):
     conn.commit()
 
 def get_cheapest(conn, top_n=10):
+    """
+    Show the cheapest CURRENT options, de-duplicated:
+      1) Keep only the LATEST row per (site, url, size_g)
+      2) Collapse across URLs for same (site, name, size_g) picking the LOWEST price/$g
+      3) Sort by $/g asc and take top N
+    """
     c = conn.cursor()
-    c.execute("""SELECT site,name,price,currency,size_g,size_label,per_g,url
-                 FROM prices ORDER BY per_g ASC LIMIT ?""",(top_n,))
+    c.execute("""
+      WITH latest AS (
+        SELECT site,name,url,currency,price,size_g,size_label,per_g,seen_at,
+               ROW_NUMBER() OVER (
+                 PARTITION BY site, url, size_g
+                 ORDER BY datetime(seen_at) DESC
+               ) rn
+        FROM prices
+      ),
+      dedup AS (
+        SELECT site,name,url,currency,price,size_g,size_label,per_g
+        FROM latest WHERE rn=1
+      ),
+      collapsed AS (
+        SELECT
+          site,
+          name,
+          currency,
+          size_g,
+          size_label,
+          MIN(price)  AS price,
+          MIN(per_g)  AS per_g,
+          -- pick a representative URL (the one tied to the min per_g if possible)
+          MIN(url)    AS url
+        FROM dedup
+        GROUP BY site, name, size_g, size_label, currency
+      )
+      SELECT site,name,price,currency,size_g,size_label,per_g,url
+      FROM collapsed
+      ORDER BY per_g ASC
+      LIMIT ?
+    """, (top_n,))
     rows = c.fetchall()
     return [{"site":r[0],"name":r[1],"price":r[2],"currency":r[3],
              "size_g":r[4],"size_label":r[5],"per_g":r[6],"url":r[7]} for r in rows]
 
 def get_movers(conn):
+    # compute change vs previous for same (site, name)
     c = conn.cursor()
     c.execute("""
       WITH ranked AS (
         SELECT site,name,currency,price,size_label,seen_at,
-               ROW_NUMBER() OVER (PARTITION BY site,name ORDER BY seen_at DESC) rn
-        FROM prices)
+               ROW_NUMBER() OVER (PARTITION BY site,name ORDER BY datetime(seen_at) DESC) rn
+        FROM prices
+      )
       SELECT a.site,a.name,a.currency,a.price,a.size_label,b.price
-      FROM ranked a LEFT JOIN ranked b
+      FROM ranked a
+      LEFT JOIN ranked b
         ON a.site=b.site AND a.name=b.name AND b.rn=2
       WHERE a.rn=1 AND b.price IS NOT NULL
     """)
@@ -185,7 +224,7 @@ def url_or_text_has_caviar(url, text):
 
 def is_individual_tinjar(name, page_text, url=None):
     nm = (name or "").lower(); pg = (page_text or "").lower()
-    if not (url_or_text_has_caviar(url, nm) or url_or_text_has_caviar(url, pg)): 
+    if not (url_or_text_has_caviar(url, nm) or url_or_text_has_caviar(url, pg)):
         return False
     if looks_like_accessory(nm) or looks_like_accessory(pg): return False
     if contains_non_caviar_roe(nm) or contains_non_caviar_roe(pg): return False
@@ -247,14 +286,13 @@ def choose_offer_for_size(offers, size_g):
     if len(priced)==1: return priced[0]
     return sorted(priced, key=lambda x: x.get("price"))[0] if priced else None
 
-# -------- NEW: WooCommerce variations extractor --------
+# -------- WooCommerce variations extractor --------
 def extract_wc_variations(soup):
     """
     Extract variations from WooCommerce 'data-product_variations' JSON.
-    Returns list of dicts: {'price': float?, 'currency': 'USD','label': '30g'/'1 oz', 'name': '...'}
+    Returns list of dicts: {'price': float?, 'currency': 'USD','label': '30g'/'1 oz', 'size_g': float}
     """
     results = []
-    # Look for any element with data-product_variations
     for form in soup.select("[data-product_variations]"):
         raw = form.get("data-product_variations")
         if not raw: 
@@ -266,44 +304,27 @@ def extract_wc_variations(soup):
         if not isinstance(data, list):
             continue
         for var in data:
-            # price may be numeric in 'display_price' or in 'price_html'
             price = None
             if isinstance(var.get("display_price"), (int,float)):
                 price = float(var.get("display_price"))
             else:
                 price_html = var.get("price_html") or ""
                 m = MONEY_RE.search(BeautifulSoup(price_html, "lxml").get_text(" ", strip=True))
-                if m:
-                    price = float(m.group(2))
-            # build a human label from attributes (e.g., attribute_pa_size)
+                if m: price = float(m.group(2))
             attrs = var.get("attributes") or {}
-            label_bits = []
-            for k,v in attrs.items():
-                if not v: continue
-                label_bits.append(str(v))
-            label = " ".join(label_bits).strip()
-            # Fall back to variation description
-            if not label:
-                label = (var.get("variation_description") or "").strip()
-            # We need a size in that label
+            label_bits = [str(v) for v in attrs.values() if v]
+            label = " ".join(label_bits).strip() or (var.get("variation_description") or "").strip()
             size_g, _ = parse_size(label)
             if not size_g:
-                # Sometimes the size is only in the variation 'sku' or 'image alt'
                 label_ex = (var.get("sku") or "") + " " + (var.get("image",{}).get("alt","") or "")
                 size_g, _ = parse_size(label_ex)
-                if not size_g:
-                    continue
-            # Only keep variants that look like tins/jars sizes
-            if not any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G):
+            if not size_g: 
                 continue
-            if price is None:
+            if not any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G): 
                 continue
-            results.append({
-                "price": float(price),
-                "currency": "USD",   # most are USD; if needed, parse currency from page/meta
-                "label": label,
-                "size_g": float(size_g)
-            })
+            if price is None: 
+                continue
+            results.append({"price": float(price), "currency":"USD", "label":label, "size_g": float(size_g)})
     return results
 
 # =========================
@@ -359,11 +380,10 @@ def scrape_product_page(url, site_selectors=None):
                     "per_g":float(price)/float(size_g),"url":url})
         break  # one product record is fine here
 
-    # NEW: WooCommerce variations (per-size entries)
+    # WooCommerce variations (per-size entries)
     if not out:
         if url_or_text_has_caviar(url, page_text):
             variants = extract_wc_variations(soup)
-            # Build rows for each size variant we recognize as tin/jar
             for v in variants:
                 if not any(abs(v["size_g"] - s) <= 2 for s in LIKELY_TIN_SIZES_G):
                     continue
