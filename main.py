@@ -16,60 +16,56 @@ from dotenv import load_dotenv
 # =========================
 load_dotenv()
 
-NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")  # optional (news currently disabled in digest)
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 FROM_EMAIL = os.getenv("FROM_EMAIL")
 TO_EMAIL = os.getenv("TO_EMAIL")
 
 DB_PATH = os.getenv("DB_PATH", "caviar_agent.db")
-DIGEST_ITEMS = int(os.getenv("DIGEST_ITEMS", "6"))
 
-# Controls crawl/runtime so email always sends
-RUN_LIMIT_SECONDS = int(os.getenv("RUN_LIMIT_SECONDS", "180"))   # total timebox
-MAX_LINKS_PER_SITE = int(os.getenv("MAX_LINKS_PER_SITE", "40"))  # per site cap
+RUN_LIMIT_SECONDS = int(os.getenv("RUN_LIMIT_SECONDS", "180"))
+MAX_LINKS_PER_SITE = int(os.getenv("MAX_LINKS_PER_SITE", "40"))
 
-# Debug / test modes
-DEBUG_URL = os.getenv("DEBUG_URL")    # scrape a single product URL and print result (no email)
-SEND_TEST = os.getenv("SEND_TEST")    # "1" = send a simple test email
+DEBUG_URL = os.getenv("DEBUG_URL")
+SEND_TEST = os.getenv("SEND_TEST")
 RESPECT_ROBOTS = os.getenv("RESPECT_ROBOTS", "1") not in ("0", "false", "False")
 
-# NEW: fallback seeds — comma-separated list of exact product URLs
-SEED_PRODUCT_URLS = [u.strip() for u in os.getenv("SEED_PRODUCT_URLS", "").split(",") if u.strip()]
+# Proxy support (fixes DNS via provider's network if your platform has DNS issues)
+HTTP_PROXY  = os.getenv("HTTP_PROXY")
+HTTPS_PROXY = os.getenv("HTTPS_PROXY")
+PROXIES = {}
+if HTTP_PROXY:  PROXIES["http"]  = HTTP_PROXY
+if HTTPS_PROXY: PROXIES["https"] = HTTPS_PROXY
 
-# Template loader (absolute path so it works on Render)
+# Seeds (guarantee data even if crawl yields 0)
+SEED_PRODUCT_URLS = [u.strip() for u in os.getenv("SEED_PRODUCT_URLS","").split(",") if u.strip()]
+
+# Templates
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), 'templates')
-env = Environment(
-    loader=FileSystemLoader(TEMPLATE_DIR),
-    autoescape=select_autoescape(['html', 'xml'])
-)
+env = Environment(loader=FileSystemLoader(TEMPLATE_DIR),
+                  autoescape=select_autoescape(['html','xml']))
 
 # =========================
 # Matching & Parsing
 # =========================
-CAVIAR_WORD = re.compile(r"\bcaviar\b", re.IGNORECASE)
+CAVIAR_WORD = re.compile(r"\bcaviar\b", re.I)
 SIZE_RE = re.compile(r'(\d+(?:\.\d+)?)\s*(g|gram|grams|oz|ounce|ounces)\b', re.I)
 MONEY_RE = re.compile(r'([$\£\€])\s*([0-9]+(?:\.[0-9]{1,2})?)')
 
-# Exclude accessories/gifts/sets/subscriptions/etc.
 EXCLUDE_WORDS = [
     "gift set","giftset","set","bundle","sampler","flight","pairing","experience","kit",
     "accessory","accessories","spoon","mother of pearl","key","opener","tin opener",
     "blini","bellini","crepe","crème fraîche","creme fraiche","ice bowl","server",
     "tray","plate","dish","cooler","chiller","gift card","card","chips","tote","bag",
     "club","subscription","subscribe","duo","trio","quad","pack","2-pack","3-pack","4-pack",
-    "caviar class","class","tasting","pair","pairings","collection","assortment","starter"
+    "class","tasting","pair","pairings","collection","assortment","starter"
 ]
-# Exclude non-caviar roe unless explicitly marked caviar
 NON_CAVIAR_ROE = ["salmon roe","trout roe","whitefish roe","tobiko","masago","ikura"]
 
-# Hard blocklist of URL path fragments to skip entirely
 URL_BLOCKLIST = [
     "/cart", "/account", "/login", "/search", "/policy", "/policies",
     "/pages/contact", "/pages/faq", "/pages/shipping", "/pages/returns",
     "/privacy", "/terms", "/checkout"
 ]
-
-# Recognized single-unit sizes (grams) that look like tins/jars
 LIKELY_TIN_SIZES_G = [28, 30, 50, 56, 57, 85, 100, 114, 125, 180, 200, 250, 500, 1000]
 
 def norm_netloc(host: str) -> str:
@@ -87,11 +83,6 @@ def init_db(path):
         site TEXT, url TEXT, name TEXT, currency TEXT, price REAL,
         size_g REAL, size_label TEXT, per_g REAL, seen_at TEXT
     )""")
-    # keep news table for future use (not used in price digest right now)
-    c.execute("""CREATE TABLE IF NOT EXISTS news(
-        id TEXT PRIMARY KEY, title TEXT, url TEXT, published_at TEXT,
-        source TEXT, summary TEXT, category TEXT, seen_at TEXT
-    )""")
     conn.commit()
     return conn
 
@@ -101,8 +92,8 @@ def store_prices(conn, items):
     for it in items:
         c.execute("""INSERT INTO prices(site,url,name,currency,price,size_g,size_label,per_g,seen_at)
                      VALUES(?,?,?,?,?,?,?,?,?)""",
-                  (it["site"], it["url"], it["name"], it["currency"], it["price"],
-                   it["size_g"], it["size_label"], it["per_g"], datetime.utcnow().isoformat()))
+            (it["site"], it["url"], it["name"], it["currency"], it["price"],
+             it["size_g"], it["size_label"], it["per_g"], datetime.utcnow().isoformat()))
     conn.commit()
 
 def get_cheapest(conn, top_n=10):
@@ -136,7 +127,7 @@ def get_movers(conn):
     return sorted(out, key=lambda x: -abs(x["delta_pct"]))[:5]
 
 # =========================
-# HTTP session with retries
+# HTTP session
 # =========================
 def make_session():
     s = requests.Session()
@@ -145,16 +136,19 @@ def make_session():
         "Accept-Language": "en-US,en;q=0.9",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     })
-    retries = Retry(total=3, backoff_factor=0.4, status_forcelist=[429,500,502,503,504])
+    retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[429,500,502,503,504])
     s.mount("https://", HTTPAdapter(max_retries=retries))
     s.mount("http://", HTTPAdapter(max_retries=retries))
+    if PROXIES:
+        s.proxies.update(PROXIES)
+        print("Proxy enabled for HTTP(S).")
     return s
 
 SESSION = make_session()
 
-def safe_get(url, timeout=20):
+def safe_get(url, timeout=25):
     try:
-        r = SESSION.get(url, timeout=timeout)
+        r = SESSION.get(url, timeout=timeout, allow_redirects=True)
         return r
     except Exception as e:
         print("GET exception:", e, url)
@@ -167,13 +161,12 @@ def robots_allowed(url):
         base = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
         rp = robotparser.RobotFileParser()
         rp.set_url(urljoin(base, "/robots.txt")); rp.read()
-        allowed = rp.can_fetch(SESSION.headers.get("User-Agent","*"), url)
-        return allowed
+        return rp.can_fetch(SESSION.headers.get("User-Agent","*"), url)
     except Exception:
-        return True  # if robots can't be read, be permissive
+        return True
 
 # =========================
-# Product parsing utilities
+# Parsing helpers
 # =========================
 def parse_size(text):
     m = SIZE_RE.search(text or "")
@@ -188,14 +181,8 @@ def grams_to_label_both(size_g, packaging=None):
     g = int(round(size_g))
     oz = size_g / 28.3495
     oz_round_int = round(oz)
-    if abs(oz - oz_round_int) < 0.05:
-        oz_str = f"{int(oz_round_int)} oz"
-    else:
-        oz_str = f"{oz:.1f}".rstrip('0').rstrip('.') + " oz"
-    label = f"{oz_str} / {g} g"
-    if packaging:
-        label += f" {packaging}"
-    return label
+    oz_str = f"{int(oz_round_int)} oz" if abs(oz - oz_round_int) < 0.05 else f"{oz:.1f}".rstrip('0').rstrip('.') + " oz"
+    return f"{oz_str} / {g} g" + (f" {packaging}" if packaging else "")
 
 def infer_packaging(text):
     t = (text or "").lower()
@@ -214,158 +201,121 @@ def contains_non_caviar_roe(text):
 def is_individual_tinjar(name, page_text):
     nm = (name or "").lower()
     pg = (page_text or "").lower()
-    if not CAVIAR_WORD.search(nm + " " + pg):
-        return False
-    if looks_like_accessory(nm) or looks_like_accessory(pg):
-        return False
-    if contains_non_caviar_roe(nm) or contains_non_caviar_roe(pg):
-        return False
+    if not CAVIAR_WORD.search(nm + " " + pg): return False
+    if looks_like_accessory(nm) or looks_like_accessory(pg): return False
+    if contains_non_caviar_roe(nm) or contains_non_caviar_roe(pg): return False
     pack = infer_packaging(nm) or infer_packaging(pg)
     size_g, _ = parse_size(nm + " " + pg)
-    # Require tin/jar OR a common single size (to avoid sets/bundles)
-    if pack:
-        return True
-    if size_g and any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G):
-        return True
+    if pack: return True
+    if size_g and any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G): return True
     return False
 
 def size_tokens(size_g):
-    """Tokens like '30g', '30 g', '1 oz', '1oz', '1 ounce' to match variant names/SKU."""
-    if not size_g: return []
-    g = int(round(size_g))
-    oz = size_g / 28.3495
+    if not size_g: return set()
+    g = int(round(size_g)); oz = size_g/28.3495
     oz_round = round(oz, 1)
     tokens = {f"{g}g", f"{g} g"}
-    if g in (28,29,30):
-        tokens.update({"28g","29g","30g","28 g","29 g","30 g"})
-    def oz_str(x):
-        if abs(x - round(x)) < 0.05:
-            return str(int(round(x)))
-        return f"{x:.1f}".rstrip('0').rstrip('.')
+    if g in (28,29,30): tokens |= {"28g","29g","30g","28 g","29 g","30 g"}
+    def ozs(x): return str(int(round(x))) if abs(x-round(x))<0.05 else f"{x:.1f}".rstrip('0').rstrip('.')
     for o in {oz_round, round(oz)}:
-        tokens.update({f"{oz_str(o)}oz", f"{oz_str(o)} oz", f"{oz_str(o)} ounce", f"{oz_str(o)} ounces"})
+        s = ozs(o)
+        tokens |= {f"{s}oz", f"{s} oz", f"{s} ounce", f"{s} ounces"}
     return {t.lower() for t in tokens}
 
 def extract_ld_json_products_extended(soup):
-    """Return list of {name, desc, offers:[{price, currency, name?, sku?}]}"""
     items=[]
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(tag.string or "{}")
         except Exception:
             continue
-        blocks = data if isinstance(data, list) else [data]
-        for b in blocks:
+        for b in (data if isinstance(data, list) else [data]):
             if not isinstance(b, dict): continue
             if (b.get("@type") in ("Product","Offer")) or ("offers" in b):
                 name = (b.get("name") or "").strip()
                 desc = (b.get("description") or "")
                 offers=[]
-                off = b.get("offers")
-                if isinstance(off, dict):
-                    offers = [off]
-                elif isinstance(off, list):
-                    offers = [o for o in off if isinstance(o, dict)]
-                norm_offers=[]
+                off=b.get("offers")
+                if isinstance(off, dict): offers=[off]
+                elif isinstance(off, list): offers=[o for o in off if isinstance(o, dict)]
+                norm=[]
                 for o in offers:
-                    norm_offers.append({
+                    norm.append({
                         "price": (float(o.get("price")) if (o.get("price") not in (None,"")) else None),
                         "currency": o.get("priceCurrency","USD"),
                         "name": (o.get("name") or o.get("description") or ""),
                         "sku": o.get("sku") or ""
                     })
-                items.append({"name":name, "desc":desc, "offers":norm_offers})
+                items.append({"name":name,"desc":desc,"offers":norm})
     return items
 
 def choose_offer_for_size(offers, size_g):
-    """Pick the offer whose name/SKU best matches the size tokens."""
-    if not offers or not size_g: 
-        return None
+    if not offers or not size_g: return None
     toks = size_tokens(size_g)
     for o in offers:
         s = (o.get("name","") + " " + o.get("sku","")).lower()
         if any(t in s for t in toks):
             return o
     priced = [o for o in offers if o.get("price")]
-    if len(priced) == 1:
-        return priced[0]
-    if priced:
-        return sorted(priced, key=lambda x: x.get("price"))[0]
-    return None
+    if len(priced)==1: return priced[0]
+    return sorted(priced, key=lambda x: x.get("price"))[0] if priced else None
 
 # =========================
-# Scraper Core
+# Scraper
 # =========================
 def scrape_product_page(url, site_selectors=None):
-    """
-    Extract products for an exact product URL.
-    - Only accepts true product pages (we pass only /product(s)/ links).
-    - Filters to individual caviar tins/jars.
-    - Price matched to the size via JSON-LD offers when available.
-    """
-    low_url = url.lower()
-    if any(b in low_url for b in URL_BLOCKLIST):
-        print("BLOCKLIST skip:", url)
-        return []
-    if "/product" not in low_url and "/products" not in low_url:
+    low = url.lower()
+    if any(b in low for b in URL_BLOCKLIST): 
+        print("BLOCKLIST skip:", url); return []
+    if "/product" not in low and "/products" not in low:
         return []
 
     if not robots_allowed(url):
         print("ROBOTS disallow:", url)
-        if RESPECT_ROBOTS:
-            return []
-        else:
-            print("ROBOTS override (RESPECT_ROBOTS=0): proceeding.")
+        if RESPECT_ROBOTS: return []
+        else: print("ROBOTS override (RESPECT_ROBOTS=0): proceeding.")
 
     r = safe_get(url)
     if not (r and r.ok):
         code = r.status_code if r else "ERR"
-        print(f"GET failed ({code}):", url)
-        return []
+        print(f"GET failed ({code}):", url); return []
 
     soup = BeautifulSoup(r.text, "lxml")
     page_text = soup.get_text(" ", strip=True)
-    out = []
+    out=[]
 
     page_title = (soup.title.string if soup.title else "") or ""
     h1 = soup.find("h1")
     h1_text = h1.get_text(strip=True) if h1 else ""
 
-    # 1) JSON-LD with variant matching
+    # JSON-LD first (with variant match)
     for item in extract_ld_json_products_extended(soup):
         name = (item.get("name") or "").strip() or h1_text or page_title
-        if not name:
-            continue
-        if not is_individual_tinjar(name, page_text):
+        if not name or not is_individual_tinjar(name, page_text): 
             continue
         size_g, _ = parse_size(name + " " + (item.get("desc") or "") + " " + page_text)
-        if not size_g:
-            continue
+        if not size_g: continue
         offer = choose_offer_for_size(item.get("offers"), size_g)
         price = offer.get("price") if offer else None
         currency = (offer.get("currency") if offer else "USD") if price else None
         if not price:
-            cur, maybe = norm_price_currency(page_text)
+            cur, maybe = MONEY_RE.search(page_text or "") and ('USD', float(MONEY_RE.search(page_text).group(2))) or ('USD', None)
             price = maybe; currency = cur if maybe else None
-        if not (size_g and price and currency):
+        if not (size_g and price and currency): 
             continue
         pack = infer_packaging(name) or infer_packaging(page_text)
         size_label = grams_to_label_both(size_g, packaging=pack)
-        out.append({
-            "name": name, "price": float(price), "currency": currency,
-            "size_g": float(size_g), "size_label": size_label or "n/a",
-            "per_g": float(price)/float(size_g), "url": url
-        })
+        out.append({"name":name,"price":float(price),"currency":currency,
+                    "size_g":float(size_g),"size_label":size_label or "n/a",
+                    "per_g":float(price)/float(size_g),"url":url})
 
-    # 2) Fallback: selectors/meta
+    # Fallback: selectors/meta
     if not out:
         name = h1_text or page_title
-        if not is_individual_tinjar(name, page_text):
-            return []
+        if not is_individual_tinjar(name, page_text): return []
         size_g, _ = parse_size(name + " " + page_text)
-        if not size_g:
-            return []
-        price = None; currency = "USD"
+        if not size_g: return []
+        price=None; currency="USD"
 
         try_selectors=[]
         if site_selectors:
@@ -378,218 +328,155 @@ def scrape_product_page(url, site_selectors=None):
             "[itemprop='price']",
             ".price-item--regular", ".price", ".product-price",
             "meta[property='og:price:amount']::attr(content)",
-            "meta[name='twitter:data1']::attr(content)",
-            "[data-price]"
+            "meta[name='twitter:data1']::attr(content)", "[data-price]"
         ]
 
         for sel in try_selectors:
             node=None; attr=None
             if "::attr(" in sel:
-                css, attr = sel.split("::attr(")
-                attr = attr.replace(")","").strip()
+                css, attr = sel.split("::attr("); attr = attr.replace(")","").strip()
                 node = soup.select_one(css.strip())
                 val = node[attr] if (node and node.has_attr(attr)) else None
             else:
                 node = soup.select_one(sel)
                 val = node.get_text(" ", strip=True) if node else None
             if val:
-                cur, maybe_price = norm_price_currency(val)
-                if maybe_price:
-                    price = maybe_price; currency = cur; break
+                m = MONEY_RE.search(val)
+                if m:
+                    currency = {'$':'USD','£':'GBP','€':'EUR'}.get(m.group(1),'USD')
+                    price = float(m.group(2)); break
 
         if price:
             pack = infer_packaging(name) or infer_packaging(page_text)
             size_label = grams_to_label_both(size_g, packaging=pack)
-            out.append({
-                "name": name, "price": float(price), "currency": currency,
-                "size_g": float(size_g), "size_label": size_label or "n/a",
-                "per_g": float(price)/float(size_g), "url": url
-            })
-
+            out.append({"name":name,"price":float(price),"currency":currency,
+                        "size_g":float(size_g),"size_label":size_label or "n/a",
+                        "per_g":float(price)/float(size_g),"url":url})
     return out
 
 def crawl_site(site, deadline=None):
-    """
-    Crawl a site's category/start URLs; discover product links; visit them; return parsed products.
-    - Only follows real product pages (/product/ or /products/).
-    - Skips blocked/utility pages.
-    - Stops early if 'deadline' is reached.
-    """
     results=[]
     start_urls = site.get("start_urls",[])
     sel = site.get("selectors",{}) or {}
     whitelist = set(norm_netloc(h) for h in (site.get("allow_domains") or []))
     site_name = site.get("name") or (whitelist and next(iter(whitelist))) or "site"
 
-    def timed_out():
-        return bool(deadline and datetime.utcnow() >= deadline)
-
+    def timed_out(): return bool(deadline and datetime.utcnow() >= deadline)
     def domain_ok(u):
-        if not whitelist:  # no whitelist, allow all
-            return True
-        net = norm_netloc(urlparse(u).netloc)
-        return net in whitelist
-
-    def allowed_candidate(u):
-        low = (u or "").lower()
-        if any(b in low for b in URL_BLOCKLIST):
-            return False
+        if not whitelist: return True
+        net = norm_netloc(urlparse(u).netloc); return net in whitelist
+    def allowed(u):
+        low=(u or "").lower()
+        if any(b in low for b in URL_BLOCKLIST): return False
         return ("/products/" in low) or ("/product/" in low)
 
     for start in start_urls:
-        if timed_out():
-            print(f"[{site_name}] timebox reached before fetching start url.")
-            break
-
+        if timed_out(): print(f"[{site_name}] timebox before start."); break
         r = safe_get(start)
         if not (r and r.ok):
             code = r.status_code if r else "ERR"
-            print(f"START failed ({code}):", start)
-            continue
+            print(f"START failed ({code}):", start); continue
         soup = BeautifulSoup(r.text, "lxml")
-
-        # Gather candidate product links
         links=set()
 
-        # 1) Site-provided selector
         if sel.get("product_link"):
             for a in soup.select(sel["product_link"]):
-                href=a.get("href")
+                href=a.get("href"); 
                 if not href: continue
                 full=urljoin(start, href)
-                if not domain_ok(full): continue
-                if not allowed_candidate(full): continue
-                links.add(full)
+                if domain_ok(full) and allowed(full): links.add(full)
 
-        # 2) Heuristic fallback
         for a in soup.find_all("a", href=True):
-            href=a["href"]
-            full=urljoin(start, href)
-            if not domain_ok(full): continue
-            if not allowed_candidate(full): continue
-            links.add(full)
+            full=urljoin(start, a["href"])
+            if domain_ok(full) and allowed(full): links.add(full)
 
-        links_list = list(links)[:MAX_LINKS_PER_SITE]  # product pages only
+        links_list = list(links)[:MAX_LINKS_PER_SITE]
         print(f"[{site_name}] found {len(links_list)} product links on {start}")
 
-        # Visit each product link
         kept=0
         for url in links_list:
-            if timed_out():
-                print(f"[{site_name}] timebox reached mid-site. Stopping.")
-                break
+            if timed_out(): print(f"[{site_name}] timebox mid-site."); break
             prods = scrape_product_page(url, site_selectors=sel)
             for p in prods:
-                p["site"]=site_name
-                results.append(p)
-                kept+=1
-
+                p["site"]=site_name; results.append(p); kept+=1
         print(f"[{site_name}] kept {kept} products from {start}")
-        time.sleep(0.5)  # politeness delay
-        if timed_out():
-            break
-
+        time.sleep(0.5)
+        if timed_out(): break
     return results
 
 # =========================
-# Email render/send
+# Email
 # =========================
-def render_html(cheapest, movers, news_items):
-    # Template should display items' size_label: "1 oz / 30 g tin"
+def render_html(cheapest, movers):
     tpl = env.get_template("digest_template.html")
     return tpl.render(
         date=datetime.utcnow().strftime("%B %d, %Y"),
-        cheapest=cheapest, movers=movers, news_items=news_items
+        cheapest=cheapest, movers=movers, news_items=[]
     )
 
 def send_email_html(subject, html_body):
     if not (SENDGRID_API_KEY and FROM_EMAIL and TO_EMAIL):
-        print("ERROR: SendGrid vars not set.")
-        return
+        print("ERROR: SendGrid vars not set."); return
     try:
         sg = SendGridAPIClient(SENDGRID_API_KEY)
-        message = Mail(from_email=FROM_EMAIL, to_emails=TO_EMAIL,
-                       subject=subject, html_content=html_body)
-        resp = sg.send(message)
+        resp = sg.send(Mail(from_email=FROM_EMAIL, to_emails=TO_EMAIL,
+                            subject=subject, html_content=html_body))
         print("Email send status:", resp.status_code)
-        try:
-            print("Email send body:", getattr(resp, "body", b"")[:500])
-        except Exception:
-            pass
     except Exception as e:
-        import traceback
-        print("SENDGRID ERROR:", e)
-        print(traceback.format_exc())
+        import traceback; print("SENDGRID ERROR:", e); print(traceback.format_exc())
 
 # =========================
 # Main
 # =========================
 def main():
     try:
-        # Test mode: send email immediately (no scraping)
         if SEND_TEST == "1":
-            print("SEND_TEST=1 — sending a simple test email now.")
-            html = "<h1>Test email from Caviar Agent</h1><p>If you see this, SendGrid works.</p>"
-            subject = f"Test — {datetime.utcnow().strftime('%b %d, %Y %H:%M UTC')}"
-            send_email_html(subject, html)
-            print("Done with test mode.")
+            print("SEND_TEST=1 — sending test email.")
+            send_email_html(f"Test — {datetime.utcnow():%b %d, %Y %H:%M UTC}",
+                            "<h1>Test email from Caviar Agent</h1><p>If you see this, SendGrid works.</p>")
             return
 
-        # Single-page debug scrape
         if DEBUG_URL:
-            print("DEBUG_URL set — scraping just this page:", DEBUG_URL)
+            print("DEBUG_URL →", DEBUG_URL)
             prods = scrape_product_page(DEBUG_URL)
             print("Extracted products:", prods)
             return
 
-        if not (SENDGRID_API_KEY and FROM_EMAIL and TO_EMAIL):
-            print("ERROR: SendGrid vars not set.")
-            return
-
-        # ---- Timebox setup ----
         start = datetime.utcnow()
         deadline = start + timedelta(seconds=RUN_LIMIT_SECONDS)
+        def time_left(): return max(0, (deadline - datetime.utcnow()).total_seconds())
 
-        def time_left():
-            return max(0, (deadline - datetime.utcnow()).total_seconds())
+        print(f"Starting run at {start.isoformat()} (timebox {RUN_LIMIT_SECONDS}s, RESPECT_ROBOTS={'0' if not RESPECT_ROBOTS else '1'})")
+        if PROXIES: print("Using proxies:", PROXIES)
 
-        print(f"Starting run at {start.isoformat()} (timebox {RUN_LIMIT_SECONDS}s, RESPECT_ROBOTS={'1' if RESPECT_ROBOTS else '0'})")
         conn = init_db(DB_PATH)
 
-        # Load sellers
+        # Load sites
         seed_path = os.path.join(os.path.dirname(__file__), "price_sites.yaml")
         try:
-            with open(seed_path, "r") as f:
+            with open(seed_path,"r") as f:
                 cfg = yaml.safe_load(f) or {}
             sites = cfg.get("sites", [])
             print("Loaded price_sites.yaml with", len(sites), "sites.")
         except Exception as e:
-            print("No price_sites.yaml found or unreadable:", e)
-            sites = []
+            print("YAML load error:", e); sites=[]
 
-        # Crawl within timebox
         all_prices=[]
         for site in sites:
             if time_left() <= 3:
-                print("Global timebox reached before starting next site.")
-                break
+                print("Timebox reached before next site."); break
             print(f"Crawling: {site.get('name')} (time left ≈ {int(time_left())}s)")
             items = crawl_site(site, deadline=deadline)
             print(f" -> {len(items)} products from {site.get('name')}")
-            all_prices.extend(items)
-            time.sleep(0.2)
+            all_prices.extend(items); time.sleep(0.2)
 
-        # Fallback: if nothing found, try SEED_PRODUCT_URLS
         if not all_prices and SEED_PRODUCT_URLS:
             print("No site products found — trying SEED_PRODUCT_URLS fallback.")
-            stub_site = {"name":"seed", "selectors":{}}
-            kept = 0
+            kept=0
             for u in SEED_PRODUCT_URLS:
                 prods = scrape_product_page(u, site_selectors={})
                 for p in prods:
-                    p["site"] = "seed"
-                    all_prices.append(p)
-                    kept += 1
+                    p["site"]="seed"; all_prices.append(p); kept+=1
             print(f" -> {kept} products from seeds.")
 
         if all_prices:
@@ -598,23 +485,18 @@ def main():
         else:
             print("No prices found this run.")
 
-        # Build digest (price focus)
         cheapest = get_cheapest(conn, top_n=10)
         movers = get_movers(conn)
-        news_items = []  # keep empty for speed/focus
+        print(f"Digest sections -> cheapest:{len(cheapest)} movers:{len(movers)}")
 
-        print(f"Digest sections -> cheapest:{len(cheapest)} movers:{len(movers)} news:{len(news_items)}")
-
-        # Email (always send whatever we have so far)
-        html_body = render_html(cheapest, movers, news_items)
-        subject = f"Daily Caviar Digest — {datetime.utcnow().strftime('%b %d, %Y')}"
+        html = render_html(cheapest, movers)
+        subject = f"Daily Caviar Digest — {datetime.utcnow():%b %d, %Y}"
         print("Sending email to:", TO_EMAIL)
-        send_email_html(subject, html_body)
+        send_email_html(subject, html)
         print("Done. Total runtime ~", int((datetime.utcnow() - start).total_seconds()), "seconds")
     except Exception as e:
         import traceback
-        print("FATAL ERROR:", e)
-        print(traceback.format_exc())
+        print("FATAL ERROR:", e); print(traceback.format_exc())
 
 if __name__ == "__main__":
     main()
