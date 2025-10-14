@@ -1,78 +1,105 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Daily Caviar Digest — {{ date }}</title>
-  <style>
-    body { font-family: Arial, sans-serif; background:#0f172a; color:#e5e7eb; margin:0; }
-    .wrap { max-width:760px; margin:0 auto; padding:24px; }
-    h1 { margin:0 0 12px; }
-    .section { margin:24px 0; }
-    table { width:100%; border-collapse:collapse; }
-    th, td { border-bottom:1px solid #334155; padding:8px; text-align:left; font-size:14px;}
-    th { color:#93c5fd; }
-    a { color:#93c5fd; text-decoration:none; }
-    .tag { font-size:12px; color:#94a3b8; }
-  </style>
+<meta charset="utf-8">
+<title>Daily Caviar Digest</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f8f8f8;
+    color: #333;
+    margin: 0; padding: 2rem;
+  }
+  h1 { margin-bottom: 0.2em; }
+  h2 { margin-top: 1.5em; color: #222; }
+  table {
+    width: 100%; border-collapse: collapse; background: white; border-radius: 6px;
+  }
+  th, td {
+    padding: 8px 10px; text-align: left; border-bottom: 1px solid #eee;
+  }
+  th {
+    background: #fafafa;
+    font-weight: 600;
+    font-size: 0.95em;
+  }
+  tr:hover td { background: #f5faff; }
+  a { color: #0059c9; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .species {
+    font-style: italic;
+    color: #555;
+    font-size: 0.9em;
+  }
+  footer {
+    margin-top: 2rem; font-size: 0.8em; color: #888;
+  }
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>🐟 Daily Caviar Digest — {{ date }}</h1>
-    <div class="tag">Cheapest options + market intel</div>
 
-    <div class="section">
-      <h2>💰 Cheapest Options (price/gram)</h2>
-      {% if cheapest %}
-      <table>
-        <tr><th>Seller</th><th>Product</th><th>Size</th><th>Price</th><th>$/g</th><th>Link</th></tr>
-        {% for p in cheapest %}
-          <tr>
-            <td>{{ p.site }}</td>
-            <td>{{ p.name }}</td>
-            <td>{{ p.size_label }}</td>
-            <td>{{ p.currency }} {{ "%.2f"|format(p.price) }}</td>
-            <td>{{ "%.2f"|format(p.per_g) }}</td>
-            <td><a href="{{ p.url }}">View</a></td>
-          </tr>
-        {% endfor %}
-      </table>
-      {% else %}
-        <p>No price data yet — add seller URLs to <code>price_sites.yaml</code>.</p>
-      {% endif %}
-    </div>
+<h1>🐟 Daily Caviar Digest — {{ date }}</h1>
+<p>Cheapest verified sturgeon caviar options across trusted producers.</p>
 
-    <div class="section">
-      <h2>📉 Notable Price Changes (24–72h)</h2>
-      {% if movers %}
-        <ul>
-          {% for m in movers %}
-            <li>{{ m.site }} — <strong>{{ m.name }}</strong>: {{ m.delta_sign }}{{ "%.2f"|format(m.delta_abs) }} {{ m.currency }} ({{ m.delta_pct }}%) → now {{ m.currency }} {{ "%.2f"|format(m.price) }} / {{ m.size_label }}</li>
-          {% endfor %}
-        </ul>
-      {% else %}
-        <p>No price changes detected in the last 72h.</p>
-      {% endif %}
-    </div>
+{% if cheapest and cheapest|length > 0 %}
+<h2>💰 Cheapest Options (price/gram)</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Seller</th>
+      <th>Product</th>
+      <th>Species</th>
+      <th>Size</th>
+      <th>Price</th>
+      <th>$/g</th>
+      <th>Link</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for item in cheapest %}
+    <tr>
+      <td>{{ item.site }}</td>
+      <td>{{ item.name }}</td>
+      <td>
+        {{ item.species }}
+        {% if item.species_latin %}
+          <div class="species">{{ item.species_latin }}</div>
+        {% endif %}
+      </td>
+      <td>{{ item.size_label }}</td>
+      <td>{{ item.currency }} {{ "%.2f"|format(item.price) }}</td>
+      <td>{{ "%.2f"|format(item.per_g) }}</td>
+      <td><a href="{{ item.url }}">View</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No caviar listings with verified species found in this run.</p>
+{% endif %}
 
-    <div class="section">
-      <h2>📰 Producer & Farm Updates (caviar-only)</h2>
-      {% if news_items %}
-        {% for it in news_items %}
-          <div style="margin:12px 0;">
-            <div class="tag">{{ it.category }}</div>
-            <div><a href="{{ it.url }}"><strong>{{ it.title }}</strong></a></div>
-            <div class="tag">{{ it.source }} — {{ it.published_at }}</div>
-            <div>{{ it.summary }}</div>
-          </div>
-        {% endfor %}
-      {% else %}
-        <p>No new caviar-specific headlines.</p>
-      {% endif %}
-    </div>
+{% if movers and movers|length > 0 %}
+<h2>📉 Notable Price Changes (24–72h)</h2>
+<table>
+  <thead>
+    <tr><th>Seller</th><th>Product</th><th>Size</th><th>Change</th></tr>
+  </thead>
+  <tbody>
+  {% for mv in movers %}
+    <tr>
+      <td>{{ mv.site }}</td>
+      <td>{{ mv.name }}</td>
+      <td>{{ mv.size_label }}</td>
+      <td>{{ mv.delta_sign }}{{ "%.2f"|format(mv.delta_pct) }}%</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
 
-    <div class="section" style="color:#94a3b8;font-size:12px;">
-      Data gathered automatically; prices may change. Update seller list in <code>price_sites.yaml</code>.
-    </div>
-  </div>
+<footer>
+  <p>Data gathered automatically from verified producers & farms. Prices may change. Update <code>price_sites.yaml</code> to add or remove sellers.</p>
+</footer>
+
 </body>
 </html>
