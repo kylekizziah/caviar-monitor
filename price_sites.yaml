@@ -5,7 +5,7 @@ sites:
     allow_domains: ["brownetrading.com","www.brownetrading.com"]
     selectors:
       product_link: "a.woocommerce-LoopProduct-link[href*='/product/']"
-      name: "h1.product_title"
+      name: "h1.product_title, h1.entry-title, h1"
       price: "p.price, .summary [itemprop='price'], meta[property='og:price:amount']::attr(content)"
 
   - name: "Marky's"
