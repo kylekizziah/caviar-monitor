@@ -1,7 +1,6 @@
 import os, re, json, time, sqlite3, yaml
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse
-import urllib.robotparser as robotparser
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -12,7 +11,7 @@ from sendgrid.helpers.mail import Mail
 from dotenv import load_dotenv
 
 # =========================
-# Environment & Constants
+# Environment & constants
 # =========================
 load_dotenv()
 
@@ -22,28 +21,27 @@ TO_EMAIL         = os.getenv("TO_EMAIL")
 
 DB_PATH = os.getenv("DB_PATH", "caviar_agent.db")
 
-# Keep these small & simple so a run completes and emails reliably
+# keep runs short so an email always goes out
 RUN_LIMIT_SECONDS  = int(os.getenv("RUN_LIMIT_SECONDS", "150"))
 MAX_LINKS_PER_SITE = int(os.getenv("MAX_LINKS_PER_SITE", "30"))
 
-# Handy toggles you already used
-SEND_TEST      = os.getenv("SEND_TEST")       # "1" = send a simple test email then exit
-DEBUG_URL      = os.getenv("DEBUG_URL")       # scrape one URL then exit (for quick checks)
-RESPECT_ROBOTS = os.getenv("RESPECT_ROBOTS", "1") not in ("0", "false", "False")
+# handy toggles
+SEND_TEST = os.getenv("SEND_TEST")   # "1" = send test email then exit
+DEBUG_URL = os.getenv("DEBUG_URL")   # scrape one URL then exit
 
-# Templates
+# templates
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), 'templates')
 env = Environment(loader=FileSystemLoader(TEMPLATE_DIR),
                   autoescape=select_autoescape(['html','xml']))
 
 # =========================
-# Filters & Parsing
+# Filters & parsing
 # =========================
 CAVIAR_WORD = re.compile(r"\bcaviar\b", re.I)
 SIZE_RE     = re.compile(r'(\d+(?:\.\d+)?)\s*(g|gram|grams|oz|ounce|ounces)\b', re.I)
 MONEY_RE    = re.compile(r'([$\£\€])\s*([0-9]+(?:\.[0-9]{1,2})?)')
 
-# Exclude accessories/sets/etc.
+# exclude accessories/gifts/subscriptions/etc.
 EXCLUDE_WORDS = [
     "gift set","giftset","set","bundle","sampler","flight","pairing","experience","kit",
     "accessory","accessories","spoon","mother of pearl","key","opener","tin opener",
@@ -59,6 +57,7 @@ URL_BLOCKLIST = [
     "/pages/contact", "/pages/faq", "/pages/shipping", "/pages/returns",
     "/privacy", "/terms", "/checkout"
 ]
+# common single-tin sizes (grams)
 LIKELY_TIN_SIZES_G = [28,30,50,56,57,85,100,114,125,180,200,250,500,1000]
 
 def norm_netloc(host: str) -> str:
@@ -98,7 +97,6 @@ def get_cheapest(conn, top_n=10):
              "size_g":r[4],"size_label":r[5],"per_g":r[6],"url":r[7]} for r in rows]
 
 def get_movers(conn):
-    # compare last vs previous price for same site+name
     c = conn.cursor()
     c.execute("""
       WITH ranked AS (
@@ -121,7 +119,7 @@ def get_movers(conn):
     return sorted(out, key=lambda x: -abs(x["delta_pct"]))[:5]
 
 # =========================
-# HTTP session (no proxy)
+# HTTP session (no proxies)
 # =========================
 def make_session():
     s = requests.Session()
@@ -143,17 +141,6 @@ def safe_get(url, timeout=20):
     except Exception as e:
         print("GET exception:", e, url)
         return None
-
-def robots_allowed(url):
-    if not RESPECT_ROBOTS:
-        return True
-    try:
-        base = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
-        rp = robotparser.RobotFileParser()
-        rp.set_url(urljoin(base, "/robots.txt")); rp.read()
-        return rp.can_fetch(SESSION.headers.get("User-Agent","*"), url)
-    except Exception:
-        return True
 
 # =========================
 # Parsing helpers
@@ -255,7 +242,7 @@ def choose_offer_for_size(offers, size_g):
     return sorted(priced, key=lambda x: x.get("price"))[0] if priced else None
 
 # =========================
-# Scraper Core
+# Scraper core
 # =========================
 def scrape_product_page(url, site_selectors=None):
     """
@@ -267,11 +254,6 @@ def scrape_product_page(url, site_selectors=None):
     low = url.lower()
     if any(b in low for b in URL_BLOCKLIST): return []
     if "/product" not in low and "/products" not in low: return []
-
-    if not robots_allowed(url):
-        print("ROBOTS disallow:", url)
-        if RESPECT_ROBOTS: return []
-        else: print("ROBOTS override: proceeding.")
 
     r = safe_get(url)
     if not (r and r.ok):
@@ -309,8 +291,7 @@ def scrape_product_page(url, site_selectors=None):
         out.append({"name":name,"price":float(price),"currency":currency,
                     "size_g":float(size_g),"size_label":size_label or "n/a",
                     "per_g":float(price)/float(size_g),"url":url})
-        # one product per page is expected; break once we have a good one
-        break
+        break  # one product per page expected
 
     # Fallback: selectors/meta
     if not out:
@@ -452,7 +433,7 @@ def main():
         deadline = start + timedelta(seconds=RUN_LIMIT_SECONDS)
         def time_left(): return max(0, (deadline - datetime.utcnow()).total_seconds())
 
-        print(f"Starting run at {start.isoformat()} (timebox {RUN_LIMIT_SECONDS}s, RESPECT_ROBOTS={'1' if RESPECT_ROBOTS else '0'})")
+        print(f"Starting run at {start.isoformat()} (timebox {RUN_LIMIT_SECONDS}s)")
         conn = init_db(DB_PATH)
 
         # Load sites
