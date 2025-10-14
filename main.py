@@ -23,7 +23,7 @@ DB_PATH = os.getenv("DB_PATH", "caviar_agent.db")
 
 # keep runs short so an email always goes out
 RUN_LIMIT_SECONDS  = int(os.getenv("RUN_LIMIT_SECONDS", "150"))
-MAX_LINKS_PER_SITE = int(os.getenv("MAX_LINKS_PER_SITE", "30"))
+MAX_LINKS_PER_SITE = int(os.getenv("MAX_LINKS_PER_SITE", "40"))
 
 # handy toggles
 SEND_TEST = os.getenv("SEND_TEST")   # "1" = send test email then exit
@@ -35,7 +35,7 @@ env = Environment(loader=FileSystemLoader(TEMPLATE_DIR),
                   autoescape=select_autoescape(['html','xml']))
 
 # =========================
-# Filters & parsing
+# Filters, species & parsing
 # =========================
 CAVIAR_WORD = re.compile(r"\bcaviar\b", re.I)
 SIZE_RE     = re.compile(r'(\d+(?:\.\d+)?)\s*(g|gram|grams|oz|ounce|ounces)\b', re.I)
@@ -50,7 +50,13 @@ EXCLUDE_WORDS = [
     "club","subscription","subscribe","duo","trio","quad","pack","2-pack","3-pack","4-pack",
     "class","tasting","pair","pairings","collection","assortment","starter"
 ]
-NON_CAVIAR_ROE = ["salmon roe","trout roe","whitefish roe","tobiko","masago","ikura"]
+# non-sturgeon & fish roe to exclude
+NON_STURGEON_ROE = [
+    "salmon roe","trout roe","whitefish roe","tobiko","masago","ikura","capelin roe",
+    "lumpfish", "flying fish roe", "bowfin", "paddlefish", "hackleback roe"  # bowfin, paddlefish not sturgeon
+]
+# We *allow* Hackleback (Scaphirhynchus platorynchus) if explicitly identified as sturgeon; exclude the generic "hackleback roe"
+ALLOW_HACKLEBACK_STURGEON = True
 
 URL_BLOCKLIST = [
     "/cart", "/account", "/login", "/search", "/policy", "/policies",
@@ -60,12 +66,26 @@ URL_BLOCKLIST = [
 # common single-tin sizes (grams)
 LIKELY_TIN_SIZES_G = [28,30,50,56,57,85,100,114,125,180,200,250,500,1000]
 
+# Species patterns: (pattern, normalized common, latin)
+SPECIES_PATTERNS = [
+    (r"\bbeluga\b|\bhuso\s*huso\b", "Beluga", "Huso huso"),
+    (r"\bkaluga\b|\bhuso\s*dauricus\b", "Kaluga", "Huso dauricus"),
+    (r"\bossetra\b|\bosetra\b|\bosetra\b|\bgueldenstaedtii\b|\bacipenser\s*gueldenstaedtii\b", "Osetra", "Acipenser gueldenstaedtii"),
+    (r"\bsevruga\b|\bacipenser\s*stellatus\b|\bstellatus\b", "Sevruga", "Acipenser stellatus"),
+    (r"\bsiberian\b|\ba\.?\s*baerii\b|\bacipenser\s*baerii\b|\bbaerii\b", "Siberian", "Acipenser baerii"),
+    (r"\bwhite\s*sturgeon\b|\ba\.?\s*transmontanus\b|\bacipenser\s*transmontanus\b|\btransmontanus\b", "White Sturgeon", "Acipenser transmontanus"),
+    (r"\bsterlet\b|\bacipenser\s*ruthenus\b|\bruthenus\b", "Sterlet", "Acipenser ruthenus"),
+    (r"\bhackleback\b|\bshovelnose\b|\bscaphirhynchus\s*platorynchus\b", "Hackleback", "Scaphirhynchus platorynchus"),
+]
+
+ALLOWED_SPECIES = {s[1] for s in SPECIES_PATTERNS}  # normalized names
+
 def norm_netloc(host: str) -> str:
     host = host or ""
     return host[4:] if host.startswith("www.") else host
 
 # =========================
-# DB (tiny)
+# DB (tiny) + migrate
 # =========================
 def init_db(path):
     conn = sqlite3.connect(path, check_same_thread=False)
@@ -75,6 +95,12 @@ def init_db(path):
         site TEXT, url TEXT, name TEXT, currency TEXT, price REAL,
         size_g REAL, size_label TEXT, per_g REAL, seen_at TEXT
     )""")
+    # Add species cols if missing
+    cols = {row[1] for row in c.execute("PRAGMA table_info(prices)").fetchall()}
+    if "species" not in cols:
+        c.execute("ALTER TABLE prices ADD COLUMN species TEXT")
+    if "species_latin" not in cols:
+        c.execute("ALTER TABLE prices ADD COLUMN species_latin TEXT")
     conn.commit()
     return conn
 
@@ -82,64 +108,62 @@ def store_prices(conn, items):
     if not items: return
     c = conn.cursor()
     for it in items:
-        c.execute("""INSERT INTO prices(site,url,name,currency,price,size_g,size_label,per_g,seen_at)
-                     VALUES(?,?,?,?,?,?,?,?,?)""",
+        c.execute("""INSERT INTO prices(site,url,name,currency,price,size_g,size_label,per_g,seen_at,species,species_latin)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                   (it["site"], it["url"], it["name"], it["currency"], it["price"],
-                   it["size_g"], it["size_label"], it["per_g"], datetime.utcnow().isoformat()))
+                   it["size_g"], it["size_label"], it["per_g"], datetime.utcnow().isoformat(),
+                   it.get("species"), it.get("species_latin")))
     conn.commit()
 
-def get_cheapest(conn, top_n=10):
+def get_cheapest(conn, top_n=12):
     """
-    Show the cheapest CURRENT options, de-duplicated:
-      1) Keep only the LATEST row per (site, url, size_g)
-      2) Collapse across URLs for same (site, name, size_g) picking the LOWEST price/$g
-      3) Sort by $/g asc and take top N
+    Cheapest CURRENT options, de-duplicated, species-required:
+      1) Keep latest per (site, url, size_g)
+      2) Collapse to lowest per-g for (site, name, size_g, species)
+      3) Sort by $/g asc, limit N
     """
     c = conn.cursor()
     c.execute("""
       WITH latest AS (
-        SELECT site,name,url,currency,price,size_g,size_label,per_g,seen_at,
+        SELECT site,name,url,currency,price,size_g,size_label,per_g,seen_at,species,species_latin,
                ROW_NUMBER() OVER (
                  PARTITION BY site, url, size_g
                  ORDER BY datetime(seen_at) DESC
                ) rn
         FROM prices
+        WHERE species IS NOT NULL AND species <> ''
       ),
       dedup AS (
-        SELECT site,name,url,currency,price,size_g,size_label,per_g
+        SELECT site,name,url,currency,price,size_g,size_label,per_g,species,species_latin
         FROM latest WHERE rn=1
       ),
       collapsed AS (
         SELECT
-          site,
-          name,
-          currency,
-          size_g,
-          size_label,
-          MIN(price)  AS price,
-          MIN(per_g)  AS per_g,
-          -- pick a representative URL (the one tied to the min per_g if possible)
-          MIN(url)    AS url
+          site, name, currency, size_g, size_label, species, species_latin,
+          MIN(price) AS price,
+          MIN(per_g) AS per_g,
+          MIN(url)   AS url
         FROM dedup
-        GROUP BY site, name, size_g, size_label, currency
+        GROUP BY site, name, size_g, size_label, currency, species, species_latin
       )
-      SELECT site,name,price,currency,size_g,size_label,per_g,url
+      SELECT site,name,price,currency,size_g,size_label,per_g,url,species,species_latin
       FROM collapsed
       ORDER BY per_g ASC
       LIMIT ?
     """, (top_n,))
     rows = c.fetchall()
     return [{"site":r[0],"name":r[1],"price":r[2],"currency":r[3],
-             "size_g":r[4],"size_label":r[5],"per_g":r[6],"url":r[7]} for r in rows]
+             "size_g":r[4],"size_label":r[5],"per_g":r[6],"url":r[7],
+             "species":r[8],"species_latin":r[9]} for r in rows]
 
 def get_movers(conn):
-    # compute change vs previous for same (site, name)
     c = conn.cursor()
     c.execute("""
       WITH ranked AS (
         SELECT site,name,currency,price,size_label,seen_at,
                ROW_NUMBER() OVER (PARTITION BY site,name ORDER BY datetime(seen_at) DESC) rn
         FROM prices
+        WHERE species IS NOT NULL AND species <> ''
       )
       SELECT a.site,a.name,a.currency,a.price,a.size_label,b.price
       FROM ranked a
@@ -182,7 +206,7 @@ def safe_get(url, timeout=20):
         return None
 
 # =========================
-# Parsing helpers
+# Species & parsing helpers
 # =========================
 def parse_size(text):
     m = SIZE_RE.search(text or "")
@@ -213,21 +237,53 @@ def looks_like_accessory(text):
     t = (text or "").lower()
     return any(w in t for w in EXCLUDE_WORDS)
 
-def contains_non_caviar_roe(text):
+def contains_non_sturgeon_or_roe(text):
     t = (text or "").lower()
-    return any(w in t for w in NON_CAVIAR_ROE)
+    if any(w in t for w in NON_STURGEON_ROE):
+        # allow explicit sturgeon hackleback if requested
+        if ALLOW_HACKLEBACK_STURGEON and ("hackleback" in t and "sturgeon" in t):
+            return False
+        return True
+    return False
 
 def url_or_text_has_caviar(url, text):
     u = (url or "").lower()
     t = (text or "").lower()
     return ("caviar" in u) or CAVIAR_WORD.search(t)
 
+def extract_species_any(text):
+    t = (text or "").lower()
+    for pat, common, latin in SPECIES_PATTERNS:
+        if re.search(pat, t, re.I):
+            return common, latin
+    return None, None
+
+def extract_species_from_json_ld(soup):
+    # Some stores put species in description or additionalProperty
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(tag.string or "{}")
+        except Exception:
+            continue
+        items = data if isinstance(data, list) else [data]
+        for it in items:
+            if not isinstance(it, dict): continue
+            desc = (it.get("description") or "") + " " + " ".join(
+                [str(ap.get("value","")) for ap in (it.get("additionalProperty") or []) if isinstance(ap, dict)]
+            )
+            sp = extract_species_any(desc)
+            if sp[0]: return sp
+    return (None, None)
+
+def ensure_sturgeon_species(species_common):
+    return species_common in ALLOWED_SPECIES
+
 def is_individual_tinjar(name, page_text, url=None):
     nm = (name or "").lower(); pg = (page_text or "").lower()
     if not (url_or_text_has_caviar(url, nm) or url_or_text_has_caviar(url, pg)):
         return False
     if looks_like_accessory(nm) or looks_like_accessory(pg): return False
-    if contains_non_caviar_roe(nm) or contains_non_caviar_roe(pg): return False
+    if contains_non_sturgeon_or_roe(nm) or contains_non_sturgeon_or_roe(pg): return False
     pack = infer_packaging(nm) or infer_packaging(pg)
     size_g, _ = parse_size(nm + " " + pg)
     if pack: return True
@@ -247,7 +303,7 @@ def size_tokens(size_g):
     return {t.lower() for t in tokens}
 
 def extract_ld_json_products_extended(soup):
-    """Return list of {name, desc, offers:[{price, currency, name?, sku?}]}"""
+    """Return list of {name, desc, offers:[{price, currency, name?, sku?}], extra_text}"""
     items=[]
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
@@ -275,7 +331,6 @@ def extract_ld_json_products_extended(soup):
     return items
 
 def choose_offer_for_size(offers, size_g):
-    """Pick the offer whose name/SKU best matches the size tokens."""
     if not offers or not size_g: return None
     toks = size_tokens(size_g)
     for o in offers:
@@ -286,12 +341,8 @@ def choose_offer_for_size(offers, size_g):
     if len(priced)==1: return priced[0]
     return sorted(priced, key=lambda x: x.get("price"))[0] if priced else None
 
-# -------- WooCommerce variations extractor --------
+# -------- WooCommerce variations --------
 def extract_wc_variations(soup):
-    """
-    Extract variations from WooCommerce 'data-product_variations' JSON.
-    Returns list of dicts: {'price': float?, 'currency': 'USD','label': '30g'/'1 oz', 'size_g': float}
-    """
     results = []
     for form in soup.select("[data-product_variations]"):
         raw = form.get("data-product_variations")
@@ -318,14 +369,63 @@ def extract_wc_variations(soup):
             if not size_g:
                 label_ex = (var.get("sku") or "") + " " + (var.get("image",{}).get("alt","") or "")
                 size_g, _ = parse_size(label_ex)
-            if not size_g: 
+            if not size_g or price is None: 
                 continue
             if not any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G): 
                 continue
-            if price is None: 
-                continue
             results.append({"price": float(price), "currency":"USD", "label":label, "size_g": float(size_g)})
     return results
+
+# -------- Shopify variants --------
+def extract_shopify_variants(soup):
+    """
+    Shopify exposes product JSON in <script type="application/json"> with "variants".
+    Each variant has "title" (often '30g' or '1 oz') and "price" in cents.
+    """
+    results=[]
+    for tag in soup.find_all("script", type="application/json"):
+        txt = tag.string or ""
+        if not txt or '"variants"' not in txt:
+            continue
+        try:
+            data = json.loads(txt)
+        except Exception:
+            continue
+        variants = data.get("variants") if isinstance(data, dict) else None
+        if not isinstance(variants, list):
+            continue
+        for v in variants:
+            title = str(v.get("title") or "").strip()
+            size_g, _ = parse_size(title)
+            if not size_g:
+                continue
+            price_cents = v.get("price")
+            if price_cents is None:
+                continue
+            price = float(price_cents)/100.0
+            if not any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G):
+                continue
+            results.append({"price": price, "currency": "USD", "label": title, "size_g": float(size_g)})
+    return results
+
+# -------- Magento price/variant helpers (basic) --------
+def extract_magento_price_and_sizes(soup):
+    out=[]
+    text = soup.get_text(" ", strip=True)
+    size_g, _ = parse_size(text)
+    price = None
+    node = soup.select_one("[data-price-amount]")
+    if node and node.has_attr("data-price-amount"):
+        try: price = float(node["data-price-amount"])
+        except: price = None
+    if price is None:
+        meta = soup.select_one("meta[property='og:price:amount']")
+        if meta and meta.has_attr("content"):
+            try: price = float(meta["content"])
+            except: pass
+    if size_g and price:
+        out.append({"price":price,"currency":"USD","label":"","size_g":float(size_g)})
+    return out
 
 # =========================
 # Scraper core
@@ -333,9 +433,7 @@ def extract_wc_variations(soup):
 def scrape_product_page(url, site_selectors=None):
     """
     Extract one or more products from an exact product URL.
-    - Only accepts true product pages (/product/ or /products/).
-    - Only keeps individual caviar tins/jars.
-    - Prefers JSON-LD offers; falls back to WooCommerce variations; then generic selectors.
+    Requires species (sturgeon) and tin/jar with size+price.
     """
     low = url.lower()
     if any(b in low for b in URL_BLOCKLIST): return []
@@ -355,10 +453,27 @@ def scrape_product_page(url, site_selectors=None):
     h1_text = h1.get_text(strip=True) if h1 else ""
     canonical_name = (h1_text or page_title).strip()
 
+    # species candidates from multiple places
+    sp_name, sp_latin = extract_species_any(canonical_name)
+    if not sp_name:
+        sp_name, sp_latin = extract_species_any(page_text)
+    if not sp_name:
+        sp_name, sp_latin = extract_species_from_json_ld(soup)
+
+    # JSON-LD offers path
+    if not (sp_name and ensure_sturgeon_species(sp_name)):
+        # still try variants and then re-check species from page (some titles are generic)
+        pass
+
     # JSON-LD with variant match
     for item in extract_ld_json_products_extended(soup):
         base_name = (item.get("name") or "").strip() or canonical_name
-        if not base_name or not is_individual_tinjar(base_name, page_text, url=url): 
+        # try species on product-specific fields
+        if not (sp_name and sp_latin):
+            sp_name, sp_latin = extract_species_any(base_name + " " + item.get("desc",""))
+        if not (sp_name and ensure_sturgeon_species(sp_name)): 
+            continue
+        if not is_individual_tinjar(base_name, page_text, url=url): 
             continue
         size_g, _ = parse_size(base_name + " " + (item.get("desc") or "") + " " + page_text)
         if not size_g: 
@@ -375,74 +490,67 @@ def scrape_product_page(url, site_selectors=None):
             continue
         pack = infer_packaging(base_name) or infer_packaging(page_text)
         size_label = grams_to_label_both(size_g, packaging=pack)
-        out.append({"name":base_name,"price":float(price),"currency":currency,
+        name_with_species = f"{base_name} — {sp_name}"
+        out.append({"name":name_with_species,"price":float(price),"currency":currency,
                     "size_g":float(size_g),"size_label":size_label or "n/a",
-                    "per_g":float(price)/float(size_g),"url":url})
-        break  # one product record is fine here
+                    "per_g":float(price)/float(size_g),"url":url,
+                    "species":sp_name, "species_latin":sp_latin})
+        # keep going; JSON-LD might include other sizes too
 
-    # WooCommerce variations (per-size entries)
-    if not out:
-        if url_or_text_has_caviar(url, page_text):
-            variants = extract_wc_variations(soup)
-            for v in variants:
-                if not any(abs(v["size_g"] - s) <= 2 for s in LIKELY_TIN_SIZES_G):
-                    continue
+    # Platform variants (Shopify/WooCommerce/Magento)
+    if not out and url_or_text_has_caviar(url, page_text):
+        # re-derive species if not found
+        if not (sp_name and sp_latin):
+            sp_name, sp_latin = extract_species_any(page_text)
+        if not (sp_name and sp_latin):
+            sp_name, sp_latin = extract_species_from_json_ld(soup)
+        if not (sp_name and ensure_sturgeon_species(sp_name)):
+            return []  # species required
+
+        added = False
+        # Shopify
+        shopify = extract_shopify_variants(soup)
+        if shopify:
+            for v in shopify:
+                if not any(abs(v["size_g"] - s) <= 2 for s in LIKELY_TIN_SIZES_G): continue
+                if not is_individual_tinjar(canonical_name, page_text, url=url): continue
                 pack = infer_packaging(canonical_name) or infer_packaging(page_text)
                 size_label = grams_to_label_both(v["size_g"], packaging=pack)
-                out.append({
-                    "name": canonical_name,
-                    "price": v["price"],
-                    "currency": v["currency"],
-                    "size_g": v["size_g"],
-                    "size_label": size_label or "n/a",
-                    "per_g": v["price"] / v["size_g"],
-                    "url": url
-                })
+                out.append({"name": f"{canonical_name} — {sp_name}",
+                            "price": v["price"], "currency": v["currency"],
+                            "size_g": v["size_g"], "size_label": size_label or "n/a",
+                            "per_g": v["price"]/v["size_g"], "url": url,
+                            "species": sp_name, "species_latin": sp_latin})
+                added = True
+        if not added:
+            wc = extract_wc_variations(soup)
+            for v in wc:
+                if not any(abs(v["size_g"] - s) <= 2 for s in LIKELY_TIN_SIZES_G): continue
+                if not is_individual_tinjar(canonical_name, page_text, url=url): continue
+                pack = infer_packaging(canonical_name) or infer_packaging(page_text)
+                size_label = grams_to_label_both(v["size_g"], packaging=pack)
+                out.append({"name": f"{canonical_name} — {sp_name}",
+                            "price": v["price"], "currency": v["currency"],
+                            "size_g": v["size_g"], "size_label": size_label or "n/a",
+                            "per_g": v["price"]/v["size_g"], "url": url,
+                            "species": sp_name, "species_latin": sp_latin})
+                added = True
+        if not added:
+            mag = extract_magento_price_and_sizes(soup)
+            for v in mag:
+                if not any(abs(v["size_g"] - s) <= 2 for s in LIKELY_TIN_SIZES_G): continue
+                if not is_individual_tinjar(canonical_name, page_text, url=url): continue
+                pack = infer_packaging(canonical_name) or infer_packaging(page_text)
+                size_label = grams_to_label_both(v["size_g"], packaging=pack)
+                out.append({"name": f"{canonical_name} — {sp_name}",
+                            "price": v["price"], "currency": v["currency"],
+                            "size_g": v["size_g"], "size_label": size_label or "n/a",
+                            "per_g": v["price"]/v["size_g"], "url": url,
+                            "species": sp_name, "species_latin": sp_latin})
 
-    # Fallback: selectors/meta (single record)
+    # Fallback disabled if species missing — species is mandatory
     if not out:
-        name = canonical_name
-        if not is_individual_tinjar(name, page_text, url=url): return []
-        size_g, _ = parse_size(name + " " + page_text)
-        if not size_g: return []
-        price=None; currency="USD"
-
-        try_selectors=[]
-        if site_selectors:
-            if site_selectors.get("price"): try_selectors.append(site_selectors["price"])
-            if site_selectors.get("name") and not name:
-                n = soup.select_one(site_selectors["name"])
-                if n: name = n.get_text(strip=True)
-
-        try_selectors += [
-            "[itemprop='price']",
-            ".price-item--regular", ".price", ".product-price", "p.price",
-            "meta[property='og:price:amount']::attr(content)",
-            "meta[name='twitter:data1']::attr(content)",
-            "[data-price]"
-        ]
-
-        for sel in try_selectors:
-            node=None; attr=None
-            if "::attr(" in sel:
-                css, attr = sel.split("::attr("); attr = attr.replace(")","").strip()
-                node = soup.select_one(css.strip())
-                val = node[attr] if (node and node.has_attr(attr)) else None
-            else:
-                node = soup.select_one(sel)
-                val = node.get_text(" ", strip=True) if node else None
-            if val:
-                m = MONEY_RE.search(val)
-                if m:
-                    currency = {'$':'USD','£':'GBP','€':'EUR'}.get(m.group(1),'USD')
-                    price = float(m.group(2)); break
-
-        if price:
-            pack = infer_packaging(name) or infer_packaging(page_text)
-            size_label = grams_to_label_both(size_g, packaging=pack)
-            out.append({"name":name,"price":float(price),"currency":currency,
-                        "size_g":float(size_g),"size_label":size_label or "n/a",
-                        "per_g":float(price)/float(size_g),"url":url})
+        return []
     return out
 
 def crawl_site(site, deadline=None):
@@ -493,7 +601,7 @@ def crawl_site(site, deadline=None):
             for p in prods:
                 p["site"]=site_name; results.append(p); kept+=1
         print(f"[{site_name}] kept {kept} products from {start}")
-        time.sleep(0.4)
+        time.sleep(0.3)
         if timed_out(): break
     return results
 
@@ -501,6 +609,10 @@ def crawl_site(site, deadline=None):
 # Email
 # =========================
 def render_html(cheapest, movers):
+    # Append species to display if template doesn't have a species column
+    for it in cheapest:
+        if it.get("species") and " — " not in it["name"]:
+            it["name"] = f"{it['name']} — {it['species']}"
     tpl = env.get_template("digest_template.html")
     return tpl.render(
         date=datetime.utcnow().strftime("%B %d, %Y"),
@@ -567,7 +679,7 @@ def main():
         else:
             print("No prices found this run.")
 
-        cheapest = get_cheapest(conn, top_n=10)
+        cheapest = get_cheapest(conn, top_n=12)
         movers   = get_movers(conn)
         print(f"Digest sections -> cheapest:{len(cheapest)} movers:{len(movers)}")
 
