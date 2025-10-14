@@ -178,9 +178,15 @@ def contains_non_caviar_roe(text):
     t = (text or "").lower()
     return any(w in t for w in NON_CAVIAR_ROE)
 
-def is_individual_tinjar(name, page_text):
+def url_or_text_has_caviar(url, text):
+    u = (url or "").lower()
+    t = (text or "").lower()
+    return ("caviar" in u) or CAVIAR_WORD.search(t)
+
+def is_individual_tinjar(name, page_text, url=None):
     nm = (name or "").lower(); pg = (page_text or "").lower()
-    if not CAVIAR_WORD.search(nm + " " + pg): return False
+    if not (url_or_text_has_caviar(url, nm) or url_or_text_has_caviar(url, pg)): 
+        return False
     if looks_like_accessory(nm) or looks_like_accessory(pg): return False
     if contains_non_caviar_roe(nm) or contains_non_caviar_roe(pg): return False
     pack = infer_packaging(nm) or infer_packaging(pg)
@@ -241,15 +247,74 @@ def choose_offer_for_size(offers, size_g):
     if len(priced)==1: return priced[0]
     return sorted(priced, key=lambda x: x.get("price"))[0] if priced else None
 
+# -------- NEW: WooCommerce variations extractor --------
+def extract_wc_variations(soup):
+    """
+    Extract variations from WooCommerce 'data-product_variations' JSON.
+    Returns list of dicts: {'price': float?, 'currency': 'USD','label': '30g'/'1 oz', 'name': '...'}
+    """
+    results = []
+    # Look for any element with data-product_variations
+    for form in soup.select("[data-product_variations]"):
+        raw = form.get("data-product_variations")
+        if not raw: 
+            continue
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(data, list):
+            continue
+        for var in data:
+            # price may be numeric in 'display_price' or in 'price_html'
+            price = None
+            if isinstance(var.get("display_price"), (int,float)):
+                price = float(var.get("display_price"))
+            else:
+                price_html = var.get("price_html") or ""
+                m = MONEY_RE.search(BeautifulSoup(price_html, "lxml").get_text(" ", strip=True))
+                if m:
+                    price = float(m.group(2))
+            # build a human label from attributes (e.g., attribute_pa_size)
+            attrs = var.get("attributes") or {}
+            label_bits = []
+            for k,v in attrs.items():
+                if not v: continue
+                label_bits.append(str(v))
+            label = " ".join(label_bits).strip()
+            # Fall back to variation description
+            if not label:
+                label = (var.get("variation_description") or "").strip()
+            # We need a size in that label
+            size_g, _ = parse_size(label)
+            if not size_g:
+                # Sometimes the size is only in the variation 'sku' or 'image alt'
+                label_ex = (var.get("sku") or "") + " " + (var.get("image",{}).get("alt","") or "")
+                size_g, _ = parse_size(label_ex)
+                if not size_g:
+                    continue
+            # Only keep variants that look like tins/jars sizes
+            if not any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G):
+                continue
+            if price is None:
+                continue
+            results.append({
+                "price": float(price),
+                "currency": "USD",   # most are USD; if needed, parse currency from page/meta
+                "label": label,
+                "size_g": float(size_g)
+            })
+    return results
+
 # =========================
 # Scraper core
 # =========================
 def scrape_product_page(url, site_selectors=None):
     """
-    Extract one product from an exact product URL.
+    Extract one or more products from an exact product URL.
     - Only accepts true product pages (/product/ or /products/).
     - Only keeps individual caviar tins/jars.
-    - Matches price to detected size via JSON-LD offers when available.
+    - Prefers JSON-LD offers; falls back to WooCommerce variations; then generic selectors.
     """
     low = url.lower()
     if any(b in low for b in URL_BLOCKLIST): return []
@@ -267,13 +332,14 @@ def scrape_product_page(url, site_selectors=None):
     page_title = (soup.title.string if soup.title else "") or ""
     h1 = soup.find("h1")
     h1_text = h1.get_text(strip=True) if h1 else ""
+    canonical_name = (h1_text or page_title).strip()
 
     # JSON-LD with variant match
     for item in extract_ld_json_products_extended(soup):
-        name = (item.get("name") or "").strip() or h1_text or page_title
-        if not name or not is_individual_tinjar(name, page_text): 
+        base_name = (item.get("name") or "").strip() or canonical_name
+        if not base_name or not is_individual_tinjar(base_name, page_text, url=url): 
             continue
-        size_g, _ = parse_size(name + " " + (item.get("desc") or "") + " " + page_text)
+        size_g, _ = parse_size(base_name + " " + (item.get("desc") or "") + " " + page_text)
         if not size_g: 
             continue
         offer = choose_offer_for_size(item.get("offers"), size_g)
@@ -286,17 +352,37 @@ def scrape_product_page(url, site_selectors=None):
                 price = float(m.group(2))
         if not (size_g and price and currency): 
             continue
-        pack = infer_packaging(name) or infer_packaging(page_text)
+        pack = infer_packaging(base_name) or infer_packaging(page_text)
         size_label = grams_to_label_both(size_g, packaging=pack)
-        out.append({"name":name,"price":float(price),"currency":currency,
+        out.append({"name":base_name,"price":float(price),"currency":currency,
                     "size_g":float(size_g),"size_label":size_label or "n/a",
                     "per_g":float(price)/float(size_g),"url":url})
-        break  # one product per page expected
+        break  # one product record is fine here
 
-    # Fallback: selectors/meta
+    # NEW: WooCommerce variations (per-size entries)
     if not out:
-        name = h1_text or page_title
-        if not is_individual_tinjar(name, page_text): return []
+        if url_or_text_has_caviar(url, page_text):
+            variants = extract_wc_variations(soup)
+            # Build rows for each size variant we recognize as tin/jar
+            for v in variants:
+                if not any(abs(v["size_g"] - s) <= 2 for s in LIKELY_TIN_SIZES_G):
+                    continue
+                pack = infer_packaging(canonical_name) or infer_packaging(page_text)
+                size_label = grams_to_label_both(v["size_g"], packaging=pack)
+                out.append({
+                    "name": canonical_name,
+                    "price": v["price"],
+                    "currency": v["currency"],
+                    "size_g": v["size_g"],
+                    "size_label": size_label or "n/a",
+                    "per_g": v["price"] / v["size_g"],
+                    "url": url
+                })
+
+    # Fallback: selectors/meta (single record)
+    if not out:
+        name = canonical_name
+        if not is_individual_tinjar(name, page_text, url=url): return []
         size_g, _ = parse_size(name + " " + page_text)
         if not size_g: return []
         price=None; currency="USD"
@@ -310,7 +396,7 @@ def scrape_product_page(url, site_selectors=None):
 
         try_selectors += [
             "[itemprop='price']",
-            ".price-item--regular", ".price", ".product-price",
+            ".price-item--regular", ".price", ".product-price", "p.price",
             "meta[property='og:price:amount']::attr(content)",
             "meta[name='twitter:data1']::attr(content)",
             "[data-price]"
@@ -367,7 +453,7 @@ def crawl_site(site, deadline=None):
         # site selector
         if sel.get("product_link"):
             for a in soup.select(sel["product_link"]):
-                href=a.get("href"); 
+                href=a.get("href")
                 if not href: continue
                 full=urljoin(start, href)
                 if domain_ok(full) and allowed(full): links.add(full)
