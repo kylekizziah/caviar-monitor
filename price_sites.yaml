@@ -1,63 +1,63 @@
 sites:
-  - name: Marshallberg Farm
+  - name: "Marshallberg Farm"
     allow_domains: ["marshallbergfarm.com","www.marshallbergfarm.com"]
     start_urls:
-      - "https://www.marshallbergfarm.com/caviar/"
+      - "https://marshallbergfarm.com/caviar/"
     selectors:
       product_link: "a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link"
     seed_product_urls:
-      - "https://www.marshallbergfarm.com/product/REPLACE-WITH-A-PRODUCT-URL"
+      # Paste actual product pages (tins/jars) that list species
+      # - "https://marshallbergfarm.com/product/royal-osetra-caviar/"
+      # - "https://marshallbergfarm.com/product/classic-osetra-caviar/"
 
-  - name: Island Creek
-    allow_domains: ["islandcreekoysters.com","www.islandcreekoysters.com"]
-    start_urls:
-      - "https://www.islandcreekoysters.com/collections/caviar"
-    selectors:
-      product_link: "a.productgrid--title, a.full-unstyled-link, a.productitem--image-link"
-    seed_product_urls:
-      - "https://www.islandcreekoysters.com/products/REPLACE-WITH-A-PRODUCT-URL"
-
-  - name: Pearl Street Caviar
-    allow_domains: ["pearlstreetcaviar.com","www.pearlstreetcaviar.com"]
-    start_urls:
-      - "https://pearlstreetcaviar.com/collections/caviar"
-    selectors:
-      product_link: "a.full-unstyled-link, a.card-information__text"
-    seed_product_urls:
-      - "https://pearlstreetcaviar.com/products/REPLACE-WITH-A-PRODUCT-URL"
-
-  - name: Marky's
-    allow_domains: ["markys.com","www.markys.com"]
-    start_urls:
-      - "https://www.markys.com/caviar"
-    selectors:
-      product_link: "a.product-item-link, a.product-item-photo"
-    seed_product_urls:
-      - "https://www.markys.com/REPLACE-WITH-A-PRODUCT-URL"
-
-  - name: Bemka / CaviarLover
-    allow_domains: ["caviarlover.com","www.caviarlover.com"]
-    start_urls:
-      - "https://www.caviarlover.com/caviar/"
-    selectors:
-      product_link: "a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link"
-    seed_product_urls:
-      - "https://www.caviarlover.com/product/REPLACE-WITH-A-PRODUCT-URL"
-
-  - name: Sterling
+  - name: "Sterling"
     allow_domains: ["sterlingcaviar.com","www.sterlingcaviar.com"]
     start_urls:
       - "https://www.sterlingcaviar.com/collections/caviar"
     selectors:
       product_link: "a.full-unstyled-link, a.card__heading a"
     seed_product_urls:
-      - "https://www.sterlingcaviar.com/products/REPLACE-WITH-A-PRODUCT-URL"
+      # - "https://www.sterlingcaviar.com/products/imperial-white-sturgeon-30g"
+      # - "https://www.sterlingcaviar.com/products/classic-white-sturgeon-50g"
 
-  - name: Tsar Nicoulai
+  - name: "Tsar Nicoulai"
     allow_domains: ["tsarnicoulai.com","www.tsarnicoulai.com"]
     start_urls:
       - "https://tsarnicoulai.com/collections/caviar"
     selectors:
       product_link: "a.full-unstyled-link, a.card-information__text"
     seed_product_urls:
-      - "https://tsarnicoulai.com/products/REPLACE-WITH-A-PRODUCT-URL"
+      # - "https://tsarnicoulai.com/products/estate-caviar-30g"
+      # - "https://tsarnicoulai.com/products/reserve-caviar-50g"
+
+  - name: "Island Creek"
+    allow_domains: ["islandcreekoysters.com","www.islandcreekoysters.com"]
+    start_urls:
+      - "https://www.islandcreekoysters.com/collections/caviar"
+    selectors:
+      product_link: "a.productitem--title, a.full-unstyled-link"
+    seed_product_urls: []
+
+  - name: "Pearl Street Caviar"
+    allow_domains: ["pearlstreetcaviar.com","www.pearlstreetcaviar.com"]
+    start_urls:
+      - "https://pearlstreetcaviar.com/collections/caviar"
+    selectors:
+      product_link: "a.full-unstyled-link, a.card-information__text"
+    seed_product_urls: []
+
+  - name: "Marky's"
+    allow_domains: ["markys.com","www.markys.com"]
+    start_urls:
+      - "https://www.markys.com/caviar"
+    selectors:
+      product_link: "a.product-item-link, a.product-item-photo"
+    seed_product_urls: []
+
+  - name: "Bemka / CaviarLover"
+    allow_domains: ["caviarlover.com","www.caviarlover.com"]
+    start_urls:
+      - "https://www.caviarlover.com/caviar/"
+    selectors:
+      product_link: "a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link"
+    seed_product_urls: []
