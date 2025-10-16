@@ -1,27 +1,29 @@
 import os, re, json, time, yaml, sqlite3
+from pathlib import Path
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse
-from pathlib import Path
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
 from bs4 import BeautifulSoup
 
-# ---------- config ----------
+# -------------------------
+# Config & paths
+# -------------------------
 BASE_DIR = Path(__file__).resolve().parent
 RUN_LIMIT_SECONDS  = int(os.getenv("RUN_LIMIT_SECONDS", "150"))
 MAX_LINKS_PER_SITE = int(os.getenv("MAX_LINKS_PER_SITE", "60"))
 DB_PATH            = os.getenv("DB_PATH", str(BASE_DIR / "caviar_agent.db"))
 
-# Home base for proximity scoring (Athens, GA)
-HOME_STATE = "GA"
-
-# ---------- regex / dictionaries ----------
+# -------------------------
+# Patterns & dictionaries
+# -------------------------
 CAVIAR_WORD = re.compile(r"\bcaviar\b", re.I)
 SIZE_RE     = re.compile(r'(\d+(?:\.\d+)?)\s*(g|gram|grams|oz|ounce|ounces)\b', re.I)
 MONEY_RE    = re.compile(r'([$\£\€])\s*([0-9]+(?:\.[0-9]{1,2})?)')
 LIKELY_TIN_SIZES_G = [28,30,50,56,57,85,100,114,125,180,200,250,500,1000]
 
+# Grade sort order (lower number = better)
 GRADE_RANK = {
     "imperial": 1,
     "royal": 2,
@@ -38,6 +40,7 @@ def grade_rank(text):
             return rank, g.title()
     return 99, None
 
+# Recognized sturgeon species (strict filter)
 SPECIES_PATTERNS = [
     (r"\bbeluga\b|\bhuso\s*huso\b", "Beluga", "Huso huso"),
     (r"\bkaluga\b|\bhuso\s*dauricus\b", "Kaluga", "Huso dauricus"),
@@ -50,7 +53,7 @@ SPECIES_PATTERNS = [
     (r"\bsterlet\b|\bacipenser\s*ruthenus\b|\bruthenus\b", "Sterlet", "Acipenser ruthenus"),
     (r"\bhackleback\b|\bshovelnose\b|\bscaphirhynchus\s*platorynchus\b", "Hackleback", "Scaphirhynchus platorynchus"),
 ]
-ALLOWED_SPECIES = {s[1] for s in SPECIES_PATTERNS}
+NON_STURGEON_ROE = ["salmon roe","trout roe","whitefish roe","tobiko","masago","ikura","capelin","lumpfish","paddlefish","bowfin"]
 
 EXCLUDE_WORDS = [
     "gift set","giftset","set","bundle","sampler","flight","pairing","experience","kit",
@@ -59,16 +62,8 @@ EXCLUDE_WORDS = [
     "gift card","chips","tote","bag","club","subscription","subscribe","duo","trio","quad","pack",
     "class","tasting","pair","collection","assortment","starter"
 ]
-NON_STURGEON_ROE = ["salmon roe","trout roe","whitefish roe","tobiko","masago","ikura","capelin","lumpfish","paddlefish","bowfin"]
 
-STATE_DISTANCE_BUCKET = {
-    "GA":0, "AL":1, "FL":1, "TN":1, "SC":1, "NC":1, "MS":2, "LA":2, "VA":2,
-    "MD":2, "DC":2, "DE":2, "PA":3, "NJ":3, "NY":3, "MA":4, "CT":4, "RI":4, "VT":5, "NH":5, "ME":6,
-    "KY":2, "WV":2, "OH":3, "MI":4, "IN":3, "IL":3, "WI":4, "MN":5, "IA":4, "MO":3,
-    "TX":3, "OK":3, "AR":2, "KS":4, "NE":4, "SD":5, "ND":6,
-    "CO":4, "NM":4, "AZ":5, "UT":5, "ID":6, "MT":6, "WY":6, "NV":6,
-    "CA":6, "OR":6, "WA":6,
-}
+# Vendor → state (for proximity label)
 VENDOR_HOME_STATE = {
     "Marshallberg Farm": "NC",
     "Island Creek": "MA",
@@ -79,7 +74,9 @@ VENDOR_HOME_STATE = {
     "Tsar Nicoulai": "CA",
 }
 
-# ---------- HTTP ----------
+# -------------------------
+# HTTP session
+# -------------------------
 def session():
     s = requests.Session()
     s.headers.update({
@@ -99,7 +96,9 @@ def safe_get(url, timeout=20):
         print("GET exception:", e, url)
         return None
 
-# ---------- utils ----------
+# -------------------------
+# Helpers
+# -------------------------
 def parse_size(text):
     m = SIZE_RE.search(text or "")
     if not m: return None
@@ -107,18 +106,18 @@ def parse_size(text):
     grams = val * 28.3495 if unit.startswith("oz") else val
     return grams
 
-def size_label_both(g):
-    if not g: return None
-    g_int = int(round(g))
-    oz = g/28.3495
+def size_label_both(size_g):
+    if not size_g: return None
+    g = int(round(size_g))
+    oz = size_g/28.3495
     oz_str = str(int(round(oz))) if abs(oz-round(oz))<0.05 else f"{oz:.1f}".rstrip("0").rstrip(".")
-    return f"{oz_str} oz / {g_int} g"
+    return f"{oz_str} oz / {g} g"
 
 def is_accessory(text):
     t=(text or "").lower()
     return any(w in t for w in EXCLUDE_WORDS)
 
-def non_sturgeon(text):
+def is_non_sturgeon(text):
     t=(text or "").lower()
     return any(w in t for w in NON_STURGEON_ROE)
 
@@ -133,12 +132,11 @@ def looks_like_product_url(u_low):
     return ("/product" in u_low) or ("/products/" in u_low) or ("/collections/" in u_low and "/products/" in u_low) or ("/shop/" in u_low and "/category/" not in u_low)
 
 def vendor_state(vendor_name):
-    return VENDOR_HOME_STATE.get(vendor_name, "FL")
+    return VENDOR_HOME_STATE.get(vendor_name, "US")
 
-def proximity_score(state):
-    return STATE_DISTANCE_BUCKET.get(state, 6)
-
-# ---------- SQLite ----------
+# -------------------------
+# SQLite (simple cache/history)
+# -------------------------
 def init_db(path):
     conn = sqlite3.connect(path, check_same_thread=False)
     c = conn.cursor()
@@ -184,7 +182,9 @@ def latest_best_by_vendor(conn):
                     "size_g":sg,"size_label":sl,"per_g":pg,"url":u,"origin_state":st})
     return out
 
-# ---------- scraping helpers ----------
+# -------------------------
+# Parsing structured data
+# -------------------------
 def extract_ld_offers(soup):
     items=[]
     for tag in soup.find_all("script", type="application/ld+json"):
@@ -219,7 +219,6 @@ def extract_ld_offers(soup):
 
 def extract_shopify_variants(soup):
     results=[]
-    extras=[]
     for tag in soup.find_all("script", type="application/json"):
         txt=tag.string or ""
         if not txt or '"variants"' not in txt:
@@ -229,10 +228,6 @@ def extract_shopify_variants(soup):
         except Exception:
             continue
         if isinstance(data, dict):
-            for key in ("tags","options","vendor","type","product_type"):
-                v=data.get(key)
-                if isinstance(v, list): extras.append(" ".join(map(str,v)))
-                elif isinstance(v,str): extras.append(v)
             vars=data.get("variants") or []
             for v in vars:
                 title = (v.get("title") or "").strip()
@@ -242,8 +237,11 @@ def extract_shopify_variants(soup):
                     price = float(price_cents)/100.0
                     if any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G):
                         results.append({"title":title,"size_g":float(size_g),"price":price,"currency":"USD"})
-    return results, " ".join(extras)
+    return results
 
+# -------------------------
+# Scrape one product page
+# -------------------------
 def scrape_product(url, vendor):
     r = safe_get(url)
     if not (r and r.ok):
@@ -252,41 +250,44 @@ def scrape_product(url, vendor):
     text = soup.get_text(" ", strip=True)
     title = (soup.title.string if soup.title else "") or ""
     h1 = soup.find("h1")
-    h1_text = h1.get_text(" ", strip=True) if h1 else ""
-    name = (h1_text or title).strip()
+    name = (h1.get_text(" ", strip=True) if h1 else title).strip()
 
+    # must be actual caviar tin/jar
     if not (CAVIAR_WORD.search(name.lower()+ " "+ text.lower())): return []
     if is_accessory(name) or is_accessory(text): return []
-    if non_sturgeon(name) or non_sturgeon(text): return []
+    if is_non_sturgeon(name) or is_non_sturgeon(text): return []
 
-    species, latin = extract_species(name) or (None,None)
+    # species (required)
+    species, latin = extract_species(name)
     if not species:
         species, latin = extract_species(text)
     if not species:
+        # try LD blobs
         for tag in soup.find_all("script", type="application/ld+json"):
             try:
-                data=json.loads(tag.string or "{}")
+                blob = json.dumps(json.loads(tag.string or "{}"))
             except Exception:
-                continue
-            blob=json.dumps(data)
-            species, latin = extract_species(blob)
-            if species: break
+                blob = ""
+            s2, l2 = extract_species(blob)
+            if s2:
+                species, latin = s2, l2
+                break
     if not species:
-        return []
+        return []  # filter out if species not stated
 
     gr_rank, grade_label = grade_rank(name + " " + text)
 
     out=[]
-    ld = extract_ld_offers(soup)
-    got_variant=False
-    for item in ld:
+    # JSON-LD offers first
+    for item in extract_ld_offers(soup):
         nm = item["name"] or name
         size_g = parse_size(nm + " " + item.get("desc","") + " " + text)
         offer = None
-        if size_g:
-            toks = size_tokens(size_g)
-            candidates = [o for o in item["offers"] if any(t in (o.get("name","")+ " "+o.get("sku","")).lower() for t in toks)]
-            offer = candidates[0] if candidates else None
+        if size_g and item["offers"]:
+            # try to match size tokens in offer label/SKU
+            tokens = size_tokens(size_g)
+            cand = [o for o in item["offers"] if any(t in (o.get("name","")+" "+o.get("sku","")).lower() for t in tokens)]
+            offer = cand[0] if cand else None
         if not offer and item["offers"]:
             priced=[o for o in item["offers"] if o.get("price")]
             offer = sorted(priced, key=lambda x:x["price"])[0] if priced else None
@@ -306,13 +307,13 @@ def scrape_product(url, vendor):
                 "per_g": float(offer["price"]) / float(size_g),
                 "origin_state": vendor_state(vendor)
             })
-            got_variant=True
             break
 
-    if not got_variant:
-        vars, extras = extract_shopify_variants(soup)
-        if vars:
-            for v in vars:
+    # Shopify JSON fallback
+    if not out:
+        vars_ = extract_shopify_variants(soup)
+        if vars_:
+            for v in vars_:
                 sl = size_label_both(v["size_g"])
                 out.append({
                     "vendor": vendor, "url": url, "name": name,
@@ -329,27 +330,33 @@ def size_tokens(size_g):
     oz = size_g/28.3495
     oz_round = round(oz, 1)
     tokens = {f"{g}g", f"{g} g"}
-    if g in (28,29,30): tokens|={"28g","29g","30g","28 g","29 g","30 g"}
+    if g in (28,29,30): tokens |= {"28g","29g","30g","28 g","29 g","30 g"}
     def ozs(x): return str(int(round(x))) if abs(x-round(x))<0.05 else f"{x:.1f}".rstrip('0').rstrip('.')
     for o in {oz_round, round(oz)}:
         s = ozs(o)
         tokens |= {f"{s}oz", f"{s} oz", f"{s} ounce", f"{s} ounces"}
     return {t.lower() for t in tokens}
 
+# -------------------------
+# Crawl a site config
+# -------------------------
 def crawl_site(site_cfg, deadline):
     results=[]
     vendor = site_cfg.get("name","Vendor")
     allow = set(site_cfg.get("allow_domains") or [])
     def domain_ok(u):
-        return (not allow) or (urlparse(u).netloc.replace("www.","") in {d.replace("www.","") for d in allow})
+        host = urlparse(u).netloc.lower().replace("www.","")
+        return (not allow) or (host in {d.lower().replace("www.","") for d in allow})
 
+    # Seed product URLs (recommended for reliability)
     for seed in site_cfg.get("seed_product_urls", [])[:MAX_LINKS_PER_SITE]:
         if datetime.utcnow() > deadline: return results
-        if not (looks_like_product_url(seed.lower()) and domain_ok(seed)):
-            continue
-        results += scrape_product(seed, vendor)
-        time.sleep(0.1)
+        low = (seed or "").lower()
+        if looks_like_product_url(low) and domain_ok(seed):
+            results += scrape_product(seed, vendor)
+            time.sleep(0.1)
 
+    # Category pages → discover product links
     for start in site_cfg.get("start_urls", []):
         if datetime.utcnow() > deadline: return results
         r = safe_get(start)
@@ -360,28 +367,33 @@ def crawl_site(site_cfg, deadline):
         sel = (site_cfg.get("selectors") or {}).get("product_link")
         if sel:
             for a in soup.select(sel):
-                href=a.get("href")
+                href = a.get("href")
                 if not href: continue
-                full=urljoin(start, href)
-                if domain_ok(full) and looks_like_product_url(full.lower()): links.add(full)
+                full = urljoin(start, href)
+                if domain_ok(full) and looks_like_product_url(full.lower()):
+                    links.add(full)
+
         for a in soup.find_all("a", href=True):
-            full=urljoin(start, a["href"])
-            if domain_ok(full) and looks_like_product_url(full.lower()): links.add(full)
+            full = urljoin(start, a["href"])
+            if domain_ok(full) and looks_like_product_url(full.lower()):
+                links.add(full)
 
         for u in list(links)[:MAX_LINKS_PER_SITE]:
             if datetime.utcnow() > deadline: break
             results += scrape_product(u, vendor)
             time.sleep(0.1)
+
     return results
 
+# -------------------------
+# Public API
+# -------------------------
 def run_scrape(price_sites_yaml="price_sites.yaml"):
     start = datetime.utcnow()
     deadline = start + timedelta(seconds=RUN_LIMIT_SECONDS)
     yaml_path = Path(price_sites_yaml)
     if not yaml_path.is_file():
-        # Try repo root as a fallback
-        alt = BASE_DIR / "price_sites.yaml"
-        yaml_path = alt if alt.is_file() else yaml_path
+        yaml_path = BASE_DIR / "price_sites.yaml"
     with open(yaml_path, "r") as f:
         config = yaml.safe_load(f) or {}
     sites = config.get("sites", [])
@@ -395,3 +407,32 @@ def run_scrape(price_sites_yaml="price_sites.yaml"):
     if all_rows:
         store(conn, all_rows)
     return latest_best_by_vendor(conn)
+
+# -------------------------
+# Grouping for email
+# -------------------------
+def bucket_for_size(g):
+    if g is None: return "Other"
+    if g <= 50:   return "For 2 (30–50 g)"
+    if g <= 110:  return "For 4 (~100 g)"
+    if g <= 260:  return "Specials (125–250 g)"
+    return "Bulk (500 g+)"
+
+def best_sort_key(item):
+    # grade → $/g → vendor alpha
+    rank = GRADE_RANK.get((item.get("grade") or "").lower(), 99)
+    per_g = item.get("per_g") or 1e9
+    vendor = item.get("vendor","")
+    return (rank, per_g, vendor)
+
+def group_and_pick(rows):
+    goods = [r for r in rows if r.get("size_g") and r.get("species")]
+    buckets = {}
+    for r in goods:
+        b = bucket_for_size(r["size_g"])
+        buckets.setdefault(b, []).append(r)
+    top_picks = {}
+    for b, items in buckets.items():
+        items_sorted = sorted(items, key=best_sort_key)
+        top_picks[b] = items_sorted[:6]
+    return buckets, top_picks
