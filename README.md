@@ -1,6 +1,6 @@
 # 🐟 Daily Caviar Digest
 
-Automated scraper + email digest for verified **sturgeon caviar tins/jars** in the U.S. 
+Automated scraper + email digest for verified **sturgeon caviar tins/jars** in the U.S.
 Parses **species**, **grade**, **size (oz / g)**, price, and **$/g**. Sends a daily email via **SendGrid**.
 
 ## What you get
