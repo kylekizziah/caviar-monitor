@@ -1,37 +1,36 @@
 sites:
   - name: "Marshallberg Farm"
-    allow_domains: ["marshallbergfarm.com","www.marshallbergfarm.com"]
+    allow_domains: ["marshallbergfarm.com", "www.marshallbergfarm.com"]
     start_urls:
       - "https://marshallbergfarm.com/caviar/"
     selectors:
       product_link: "a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link"
     seed_product_urls:
-      # Paste actual product pages (tins/jars) that list species
-      # - "https://marshallbergfarm.com/product/royal-osetra-caviar/"
-      # - "https://marshallbergfarm.com/product/classic-osetra-caviar/"
+      - "https://marshallbergfarm.com/product/royal-osetra-caviar/"
+      - "https://marshallbergfarm.com/product/classic-osetra-caviar/"
 
   - name: "Sterling"
-    allow_domains: ["sterlingcaviar.com","www.sterlingcaviar.com"]
+    allow_domains: ["sterlingcaviar.com", "www.sterlingcaviar.com"]
     start_urls:
       - "https://www.sterlingcaviar.com/collections/caviar"
     selectors:
       product_link: "a.full-unstyled-link, a.card__heading a"
     seed_product_urls:
-      # - "https://www.sterlingcaviar.com/products/imperial-white-sturgeon-30g"
-      # - "https://www.sterlingcaviar.com/products/classic-white-sturgeon-50g"
+      - "https://www.sterlingcaviar.com/products/imperial-white-sturgeon-30g"
+      - "https://www.sterlingcaviar.com/products/classic-white-sturgeon-50g"
 
   - name: "Tsar Nicoulai"
-    allow_domains: ["tsarnicoulai.com","www.tsarnicoulai.com"]
+    allow_domains: ["tsarnicoulai.com", "www.tsarnicoulai.com"]
     start_urls:
       - "https://tsarnicoulai.com/collections/caviar"
     selectors:
       product_link: "a.full-unstyled-link, a.card-information__text"
     seed_product_urls:
-      # - "https://tsarnicoulai.com/products/estate-caviar-30g"
-      # - "https://tsarnicoulai.com/products/reserve-caviar-50g"
+      - "https://tsarnicoulai.com/products/estate-caviar-30g"
+      - "https://tsarnicoulai.com/products/reserve-caviar-50g"
 
   - name: "Island Creek"
-    allow_domains: ["islandcreekoysters.com","www.islandcreekoysters.com"]
+    allow_domains: ["islandcreekoysters.com", "www.islandcreekoysters.com"]
     start_urls:
       - "https://www.islandcreekoysters.com/collections/caviar"
     selectors:
@@ -39,25 +38,31 @@ sites:
     seed_product_urls: []
 
   - name: "Pearl Street Caviar"
-    allow_domains: ["pearlstreetcaviar.com","www.pearlstreetcaviar.com"]
+    allow_domains: ["pearlstreetcaviar.com", "www.pearlstreetcaviar.com"]
     start_urls:
       - "https://pearlstreetcaviar.com/collections/caviar"
     selectors:
       product_link: "a.full-unstyled-link, a.card-information__text"
-    seed_product_urls: []
+    seed_product_urls:
+      - "https://pearlstreetcaviar.com/products/siberian-caviar-30g"
+      - "https://pearlstreetcaviar.com/products/kaluga-hybrid-caviar-50g"
 
   - name: "Marky's"
-    allow_domains: ["markys.com","www.markys.com"]
+    allow_domains: ["markys.com", "www.markys.com"]
     start_urls:
       - "https://www.markys.com/caviar"
     selectors:
       product_link: "a.product-item-link, a.product-item-photo"
-    seed_product_urls: []
+    seed_product_urls:
+      - "https://www.markys.com/product/kaluga-caviar-1oz"
+      - "https://www.markys.com/product/osetra-caviar-1oz"
 
   - name: "Bemka / CaviarLover"
-    allow_domains: ["caviarlover.com","www.caviarlover.com"]
+    allow_domains: ["caviarlover.com", "www.caviarlover.com"]
     start_urls:
       - "https://www.caviarlover.com/caviar/"
     selectors:
       product_link: "a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link"
-    seed_product_urls: []
+    seed_product_urls:
+      - "https://www.caviarlover.com/product/classic-osetra-caviar/"
+      - "https://www.caviarlover.com/product/imperial-kaluga-caviar/"
