@@ -1,62 +1,63 @@
 sites:
   - name: Marshallberg Farm
-    base: https://thecaviarfarm.com
-    url: https://thecaviarfarm.com/product-category/osetra-caviar-grades/
-    region: NC
-    species_hint: Osetra
-    list_selector: "ul.products li.product a"
-    item:
-      title_selector: "h1.product_title"
+    allow_domains: ["marshallbergfarm.com","www.marshallbergfarm.com"]
+    start_urls:
+      - "https://www.marshallbergfarm.com/caviar/"
+    selectors:
+      product_link: "a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link"
+    seed_product_urls:
+      - "https://www.marshallbergfarm.com/product/REPLACE-WITH-A-PRODUCT-URL"
 
   - name: Island Creek
-    base: https://shop.islandcreekoysters.com
-    url: https://shop.islandcreekoysters.com/collections/osetra-caviar
-    region: MA
-    species_hint: Osetra
-    list_selector: "a[href*='/products/']"
-    item:
-      title_selector: "h1.product__title"
+    allow_domains: ["islandcreekoysters.com","www.islandcreekoysters.com"]
+    start_urls:
+      - "https://www.islandcreekoysters.com/collections/caviar"
+    selectors:
+      product_link: "a.productgrid--title, a.full-unstyled-link, a.productitem--image-link"
+    seed_product_urls:
+      - "https://www.islandcreekoysters.com/products/REPLACE-WITH-A-PRODUCT-URL"
 
   - name: Pearl Street Caviar
-    base: https://pearlstreetcaviar.com
-    url: https://pearlstreetcaviar.com/collections/caviar
-    region: NY
-    species_hint: White Sturgeon
-    list_selector: "a[href*='/products/']"
-    item:
-      title_selector: "h1.product__title"
+    allow_domains: ["pearlstreetcaviar.com","www.pearlstreetcaviar.com"]
+    start_urls:
+      - "https://pearlstreetcaviar.com/collections/caviar"
+    selectors:
+      product_link: "a.full-unstyled-link, a.card-information__text"
+    seed_product_urls:
+      - "https://pearlstreetcaviar.com/products/REPLACE-WITH-A-PRODUCT-URL"
 
   - name: Marky's
-    base: https://www.markys.com
-    url: https://www.markys.com/caviar/
-    region: FL
-    list_selector: "a.product-item-link"
-    item:
-      title_selector: "h1.page-title"
+    allow_domains: ["markys.com","www.markys.com"]
+    start_urls:
+      - "https://www.markys.com/caviar"
+    selectors:
+      product_link: "a.product-item-link, a.product-item-photo"
+    seed_product_urls:
+      - "https://www.markys.com/REPLACE-WITH-A-PRODUCT-URL"
 
-  - name: Bemka (CaviarLover)
-    base: https://caviarlover.com
-    url: https://caviarlover.com/collections/caviar
-    region: FL
-    species_hint: Osetra
-    list_selector: "a.card__heading"
-    item:
-      title_selector: "h1.product__title"
+  - name: Bemka / CaviarLover
+    allow_domains: ["caviarlover.com","www.caviarlover.com"]
+    start_urls:
+      - "https://www.caviarlover.com/caviar/"
+    selectors:
+      product_link: "a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link"
+    seed_product_urls:
+      - "https://www.caviarlover.com/product/REPLACE-WITH-A-PRODUCT-URL"
 
-  - name: Sterling Caviar
-    base: https://sterlingcaviar.com
-    url: https://sterlingcaviar.com/collections/caviar
-    region: CA
-    species_hint: White Sturgeon
-    list_selector: "a[href*='/products/']"
-    item:
-      title_selector: "h1.product__title"
+  - name: Sterling
+    allow_domains: ["sterlingcaviar.com","www.sterlingcaviar.com"]
+    start_urls:
+      - "https://www.sterlingcaviar.com/collections/caviar"
+    selectors:
+      product_link: "a.full-unstyled-link, a.card__heading a"
+    seed_product_urls:
+      - "https://www.sterlingcaviar.com/products/REPLACE-WITH-A-PRODUCT-URL"
 
   - name: Tsar Nicoulai
-    base: https://tsarnicoulai.com
-    url: https://tsarnicoulai.com/collections/caviar
-    region: CA
-    species_hint: White Sturgeon
-    list_selector: "a[href*='/products/']"
-    item:
-      title_selector: "h1.product__title"
+    allow_domains: ["tsarnicoulai.com","www.tsarnicoulai.com"]
+    start_urls:
+      - "https://tsarnicoulai.com/collections/caviar"
+    selectors:
+      product_link: "a.full-unstyled-link, a.card-information__text"
+    seed_product_urls:
+      - "https://tsarnicoulai.com/products/REPLACE-WITH-A-PRODUCT-URL"
