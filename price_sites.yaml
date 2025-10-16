@@ -5,6 +5,8 @@ sites:
       - "https://marshallbergfarm.com/caviar/"
     selectors:
       product_link: "a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link"
+    # No default here; Marshallberg pages usually name Osetra explicitly.
+    default_species: null
     seed_product_urls:
       - "https://marshallbergfarm.com/product/royal-osetra-caviar/"
       - "https://marshallbergfarm.com/product/classic-osetra-caviar/"
@@ -15,6 +17,8 @@ sites:
       - "https://www.sterlingcaviar.com/collections/caviar"
     selectors:
       product_link: "a.full-unstyled-link, a.card__heading a"
+    # Sterling is consistently White Sturgeon (A. transmontanus)
+    default_species: "White Sturgeon"
     seed_product_urls:
       - "https://www.sterlingcaviar.com/products/imperial-white-sturgeon-30g"
       - "https://www.sterlingcaviar.com/products/classic-white-sturgeon-50g"
@@ -25,6 +29,8 @@ sites:
       - "https://tsarnicoulai.com/collections/caviar"
     selectors:
       product_link: "a.full-unstyled-link, a.card-information__text"
+    # TN is also White Sturgeon domestically
+    default_species: "White Sturgeon"
     seed_product_urls:
       - "https://tsarnicoulai.com/products/estate-caviar-30g"
       - "https://tsarnicoulai.com/products/reserve-caviar-50g"
@@ -35,6 +41,8 @@ sites:
       - "https://www.islandcreekoysters.com/collections/caviar"
     selectors:
       product_link: "a.productitem--title, a.full-unstyled-link"
+    # They retail multiple species; don’t assume.
+    default_species: null
     seed_product_urls: []
 
   - name: "Pearl Street Caviar"
@@ -43,6 +51,8 @@ sites:
       - "https://pearlstreetcaviar.com/collections/caviar"
     selectors:
       product_link: "a.full-unstyled-link, a.card-information__text"
+    # PSC sells Siberian & Kaluga Hybrid among others; don’t assume.
+    default_species: null
     seed_product_urls:
       - "https://pearlstreetcaviar.com/products/siberian-caviar-30g"
       - "https://pearlstreetcaviar.com/products/kaluga-hybrid-caviar-50g"
@@ -53,6 +63,8 @@ sites:
       - "https://www.markys.com/caviar"
     selectors:
       product_link: "a.product-item-link, a.product-item-photo"
+    # Marky’s carries many species; don’t assume.
+    default_species: null
     seed_product_urls:
       - "https://www.markys.com/product/kaluga-caviar-1oz"
       - "https://www.markys.com/product/osetra-caviar-1oz"
@@ -63,6 +75,8 @@ sites:
       - "https://www.caviarlover.com/caviar/"
     selectors:
       product_link: "a.woocommerce-LoopProduct-link, a.woocommerce-loop-product__link"
+    # They carry multiple species; don’t assume.
+    default_species: null
     seed_product_urls:
       - "https://www.caviarlover.com/product/classic-osetra-caviar/"
       - "https://www.caviarlover.com/product/imperial-kaluga-caviar/"
