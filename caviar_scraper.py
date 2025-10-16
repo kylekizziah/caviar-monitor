@@ -42,7 +42,7 @@ GRADE_RANK = {
 def grade_rank(text):
     t=(text or "").lower()
     for g,rank in GRADE_RANK.items():
-        if re.search(rfr"\b{re.escape(g)}\b", t):
+        if re.search(rf"\b{re.escape(g)}\b", t):  # <-- fixed: rf-string
             return rank, g.title()
     return 99, None
 
@@ -60,7 +60,7 @@ SPECIES_PATTERNS = [
 ]
 NON_STURGEON_ROE = ["salmon roe","trout roe","whitefish roe","tobiko","masago","ikura","capelin","lumpfish","paddlefish","bowfin"]
 
-# Accessory/gift *tokens* (word boundaries). We removed broad substrings like "class" or "pair".
+# Accessory/gift tokens (word boundaries only)
 ACCESSORY_TOKENS = [
     "gift", "set", "bundle", "sampler", "flight", "pairing", "experience", "kit",
     "accessory", "accessories", "spoon", "mother of pearl", "opener",
@@ -98,7 +98,6 @@ def make_session():
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
         "Upgrade-Insecure-Requests": "1",
-        # light “browsery” hints
         "Sec-Fetch-Site": "same-origin",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Dest": "document",
@@ -171,7 +170,6 @@ def size_label_both(size_g):
     return f"{oz_str} oz / {g} g"
 
 def is_accessory_name_only(product_name):
-    # word-boundary tokens only
     t=(product_name or "").lower()
     return bool(ACCESSORY_RE.search(t))
 
@@ -327,19 +325,19 @@ def scrape_product(sess, url, vendor, referer=None, default_species=None):
     h1 = soup.find("h1")
     name = (h1.get_text(" ", strip=True) if h1 else title).strip()
 
-    # collect page text early for better decisions
+    # gather page text (helps detection when name is short)
     metas = []
     for meta in soup.select("meta[property='og:title'],meta[name='og:title'],meta[name='twitter:title'],meta[name='description'],meta[property='og:description']"):
         c = meta.get("content") or ""
         if c: metas.append(c)
     page_text = " ".join([name] + metas + [soup.get_text(" ", strip=True)])
 
-    # must be caviar somewhere on the page, not only in the name
+    # must be caviar somewhere on the page
     if not CAVIAR_WORD.search((name or "").lower()) and not CAVIAR_WORD.search(page_text.lower()):
         if VERBOSE_LOG: print(f"[skip:{vendor}] not caviar: {url}")
         return []
 
-    # weed out accessories by *name* (word-boundary)
+    # weed out accessories by name (word-boundary)
     if is_accessory_name_only(name):
         if VERBOSE_LOG: print(f"[skip:{vendor}] accessory/gift by name: {url}")
         return []
@@ -361,7 +359,7 @@ def scrape_product(sess, url, vendor, referer=None, default_species=None):
         if VERBOSE_LOG: print(f"[skip:{vendor}] species not found: {url}")
         return []
 
-    # must have a plausible tin/jar size (from name or text)
+    # plausible tin/jar size
     size_g = parse_size(name) or parse_size(page_text)
     if not size_g or not any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G):
         if VERBOSE_LOG: print(f"[skip:{vendor}] no plausible tin/jar size: {url}")
@@ -370,7 +368,7 @@ def scrape_product(sess, url, vendor, referer=None, default_species=None):
     grade_label = grade_from_text(name + " " + page_text)
     out=[]
 
-    # JSON-LD offers — try to match size tokens to offer name/SKU
+    # JSON-LD offers — match variant by size tokens if possible
     for item in extract_ld_offers(soup):
         nm = item["name"] or name
         offer = None
@@ -571,7 +569,6 @@ def crawl_site(site_cfg, deadline):
         if datetime.utcnow() >= deadline: break
         r = safe_get(sess, start)
         if not (r and r.ok): continue
-        referer = start
         if product_link_sel:
             soup = BeautifulSoup(r.text, "lxml")
             for a in soup.select(product_link_sel):
