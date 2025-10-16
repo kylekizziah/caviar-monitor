@@ -1,43 +1,62 @@
 sites:
   - name: Marshallberg Farm
+    base: https://thecaviarfarm.com
     url: https://thecaviarfarm.com/product-category/osetra-caviar-grades/
     region: NC
     species_hint: Osetra
-    grades_hint: [Classic, Royal, Gold Reserve]
-    shipping_hint: FedEx Priority Overnight
+    list_selector: "ul.products li.product a"
+    item:
+      title_selector: "h1.product_title"
+
   - name: Island Creek
-    url: https://shop.islandcreekoysters.com/pages/caviar
+    base: https://shop.islandcreekoysters.com
+    url: https://shop.islandcreekoysters.com/collections/osetra-caviar
     region: MA
-    species_hint: American Osetra
-    grades_hint: []
-    shipping_hint: Overnight
+    species_hint: Osetra
+    list_selector: "a[href*='/products/']"
+    item:
+      title_selector: "h1.product__title"
+
   - name: Pearl Street Caviar
+    base: https://pearlstreetcaviar.com
     url: https://pearlstreetcaviar.com/collections/caviar
     region: NY
-    species_hint: [White Sturgeon, Siberian]
-    grades_hint: []
-    shipping_hint: Next Day (5pm ET cutoff)
+    species_hint: White Sturgeon
+    list_selector: "a[href*='/products/']"
+    item:
+      title_selector: "h1.product__title"
+
   - name: Marky's
+    base: https://www.markys.com
     url: https://www.markys.com/caviar/
     region: FL
-    species_hint: [Osetra, Sevruga, Kaluga Hybrid, White Sturgeon]
-    grades_hint: [Imperial, Royal, Reserve, Select, Classic]
-    shipping_hint: Express (1 day) required
+    list_selector: "a.product-item-link"
+    item:
+      title_selector: "h1.page-title"
+
   - name: Bemka (CaviarLover)
+    base: https://caviarlover.com
     url: https://caviarlover.com/collections/caviar
     region: FL
-    species_hint: [Osetra, Siberian, Kaluga Hybrid]
-    grades_hint: [Imperial, Royal, Reserve, Classic]
-    shipping_hint: FedEx Overnight
+    species_hint: Osetra
+    list_selector: "a.card__heading"
+    item:
+      title_selector: "h1.product__title"
+
   - name: Sterling Caviar
+    base: https://sterlingcaviar.com
     url: https://sterlingcaviar.com/collections/caviar
     region: CA
     species_hint: White Sturgeon
-    grades_hint: [Imperial, Royal]
-    shipping_hint: Overnight
+    list_selector: "a[href*='/products/']"
+    item:
+      title_selector: "h1.product__title"
+
   - name: Tsar Nicoulai
+    base: https://tsarnicoulai.com
     url: https://tsarnicoulai.com/collections/caviar
     region: CA
     species_hint: White Sturgeon
-    grades_hint: [Classic, Estate, Reserve]
-    shipping_hint: Priority Overnight
+    list_selector: "a[href*='/products/']"
+    item:
+      title_selector: "h1.product__title"
