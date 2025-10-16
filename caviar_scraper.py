@@ -29,7 +29,7 @@ SIZE_RE     = re.compile(r'(\d+(?:\.\d+)?)\s*(g|gram|grams|oz|ounce|ounces)\b', 
 MONEY_RE    = re.compile(r'([$\£\€])\s*([0-9]+(?:\.[0-9]{1,2})?)')
 
 LIKELY_TIN_SIZES_G = [28,30,50,56,57,85,100,113,114,125,180,200,250,500,1000]
-PREFERRED_SIZES_G  = [28,30,50,100,113,114,125,250]  # what we pick if multiple
+PREFERRED_SIZES_G  = [28,30,50,100,113,114,125,250]  # choose these first if multiple
 
 GRADE_RANK = {
     "imperial": 1, "royal": 2, "reserve": 3, "gold": 3,
@@ -82,6 +82,14 @@ VENDOR_HOME_STATE = {
     "Bemka / CaviarLover": "FL",
     "Sterling": "CA",
     "Tsar Nicoulai": "CA",
+}
+
+# Vendor-specific rules
+ALLOW_BELUGA_DOMAINS = set()  # empty = never accept true Beluga by token alone
+VENDOR_SPECIES_CANON = {
+    # If vendor markets “Beluga” branding but it’s actually a hybrid,
+    # normalize it so species is accurate for comparison.
+    "Pearl Street Caviar": {"Beluga": ("Kaluga Hybrid", "Huso dauricus × Acipenser schrenckii")},
 }
 
 # =========================
@@ -212,10 +220,8 @@ def looks_sold_out(soup, page_text, availability=None, variant_available=None):
             return True
     return False
 
-# NEW: get tin sizes from offers/variants if page text lacks a size
 def sizes_from_offers_and_variants(soup):
     sizes=set()
-
     # JSON-LD offers
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
@@ -233,7 +239,6 @@ def sizes_from_offers_and_variants(soup):
                 sg = parse_size(txt)
                 if sg and any(abs(sg - s)<=2 for s in LIKELY_TIN_SIZES_G):
                     sizes.add(int(round(sg)))
-
     # Shopify variants
     for tag in soup.find_all("script", type="application/json"):
         txt=tag.string or ""
@@ -247,8 +252,6 @@ def sizes_from_offers_and_variants(soup):
                 sg = parse_size(v.get("title",""))
                 if sg and any(abs(sg - s)<=2 for s in LIKELY_TIN_SIZES_G):
                     sizes.add(int(round(sg)))
-
-    # prefer standard tin sizes
     ordered = sorted(sizes, key=lambda x: (x not in PREFERRED_SIZES_G, PREFERRED_SIZES_G.index(x) if x in PREFERRED_SIZES_G else 999, x))
     return ordered
 
@@ -284,21 +287,30 @@ def store(conn, rows):
     conn.commit()
 
 def latest_best_by_vendor(conn):
+    # pick the latest row per (vendor,url,size_g) then keep the CHEAPEST price among the latest seen per product/size
     q = """
       WITH latest AS (
         SELECT vendor,url,name,species,species_latin,grade,currency,price,size_g,size_label,per_g,origin_state,seen_at,
                ROW_NUMBER() OVER (PARTITION BY vendor,url,size_g ORDER BY datetime(seen_at) DESC) rn
         FROM prices
         WHERE species IS NOT NULL AND species <> ''
+      ),
+      dedup AS (
+        SELECT vendor,url,name,species,species_latin,grade,currency,
+               MIN(price) AS price, size_g, size_label,
+               MIN(per_g) AS per_g, origin_state
+        FROM latest
+        WHERE rn=1
+        GROUP BY vendor,url,name,species,species_latin,grade,size_g,size_label,origin_state,currency
       )
       SELECT vendor,name,species,species_latin,grade,currency,price,size_g,size_label,per_g,url,origin_state
-      FROM latest WHERE rn=1
+      FROM dedup
     """
     rows = conn.execute(q).fetchall()
     out=[]
     seen=set()
     for v,n,sp,lat,gr,cur,p,sg,sl,pg,u,st in rows:
-        key=(v,u,sg)
+        key=(v,u,int(round(sg)),round(p,2))
         if key in seen: continue
         seen.add(key)
         out.append({"vendor":v,"name":n,"species":sp,"species_latin":lat,"grade":gr,"currency":cur,"price":p,
@@ -331,12 +343,14 @@ def extract_ld_offers(soup):
                         if price not in (None,""):
                             try: price = float(price)
                             except: price = None
+                        # Try to sniff availability booleans as well
+                        avail = o.get("availability") or o.get("itemAvailability") or o.get("availabilityStarts")
                         norm.append({
                             "price": price,
                             "currency": o.get("priceCurrency") or "USD",
                             "name": o.get("name") or o.get("description") or "",
                             "sku": o.get("sku") or "",
-                            "availability": o.get("availability") or o.get("itemAvailability")
+                            "availability": avail
                         })
                 items.append({"name":name,"desc":desc,"offers":norm})
     return items
@@ -371,6 +385,21 @@ def extract_shopify_variants(soup):
 # =========================
 # Product page scraper
 # =========================
+def _canonicalize_species(vendor, species, latin, url):
+    # Optional: block “Beluga” unless explicitly allowed
+    host = norm_host(urlparse(url).netloc)
+    if species == "Beluga" and host not in ALLOW_BELUGA_DOMAINS:
+        # If vendor has a mapping, apply it. Else drop species (which will skip row).
+        mapped = VENDOR_SPECIES_CANON.get(vendor, {}).get("Beluga")
+        if mapped:
+            return mapped[0], mapped[1]
+        return None, None
+    # Vendor-specific canonicalization
+    canon = VENDOR_SPECIES_CANON.get(vendor, {}).get(species)
+    if canon:
+        return canon[0], canon[1]
+    return species, latin
+
 def scrape_product(sess, url, vendor, referer=None, default_species=None):
     r = safe_get(sess, url, referer=referer)
     if not (r and r.ok):
@@ -399,7 +428,7 @@ def scrape_product(sess, url, vendor, referer=None, default_species=None):
         if VERBOSE_LOG: print(f"[skip:{vendor}] mentions non-sturgeon: {url}")
         return []
 
-    # require either the word 'caviar' OR a recognized sturgeon species
+    # require “caviar” OR recognized species; then canonicalize
     species, latin = extract_species(name)
     if not species:
         species, latin = extract_species(page_text)
@@ -410,8 +439,11 @@ def scrape_product(sess, url, vendor, referer=None, default_species=None):
         if VERBOSE_LOG: print(f"[skip:{vendor}] not caviar / no species: {url}")
         return []
     if not species:
-        # if word 'caviar' present but no species, skip (we require species)
         if VERBOSE_LOG: print(f"[skip:{vendor}] species not found: {url}")
+        return []
+    species, latin = _canonicalize_species(vendor, species, latin, url)
+    if not species:
+        if VERBOSE_LOG: print(f"[skip:{vendor}] species blocked/could not canonicalize: {url}")
         return []
 
     grade_label = grade_from_text(name + " " + page_text)
@@ -460,19 +492,17 @@ def scrape_product(sess, url, vendor, referer=None, default_species=None):
     if not out:
         vars_ = extract_shopify_variants(soup)
         if vars_:
-            # if we derived size from variants list, prefer that exact size
             preferred_sizes = [int(round(size_g))] + derived_sizes if derived_sizes else [int(round(size_g))]
             match = None
-            # exact token/title match first
             tokens = size_tokens(size_g)
             for v in vars_:
                 t = (v["title"] or "").lower()
                 if any(tok in t for tok in tokens):
                     match = v; break
-            # else nearest size among preferred sizes
             if not match:
-                cand = sorted(vars_, key=lambda v: (abs(v["size_g"]-size_g), v["price"]))
-                if cand: match = cand[0]
+                cand = sorted([v for v in vars_ if v.get("available")],
+                              key=lambda v: (abs(v["size_g"]-size_g), v["price"]))
+                match = cand[0] if cand else None
             if match and match.get("available") and (match.get("price",0) > 0):
                 sg = match["size_g"]
                 sl = size_label_both(sg)
@@ -698,11 +728,11 @@ def init_db_and_scrape(price_sites_yaml="price_sites.yaml"):
         rows = crawl_site(site, deadline)
         all_rows.extend(rows)
     if all_rows:
-        # de-dupe exact duplicates before storing
+        # de-dupe before storing
         unique = []
         seen=set()
         for r in all_rows:
-            key=(r["vendor"], r["url"], round(r["price"],2), int(round(r["size_g"])))
+            key=(r["vendor"], r["url"], int(round(r["size_g"])), round(r["price"],2))
             if key in seen: continue
             seen.add(key); unique.append(r)
         store(conn, unique)
