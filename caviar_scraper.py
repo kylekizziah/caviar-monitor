@@ -28,8 +28,8 @@ CAVIAR_WORD = re.compile(r"\bcaviar\b", re.I)
 SIZE_RE     = re.compile(r'(\d+(?:\.\d+)?)\s*(g|gram|grams|oz|ounce|ounces)\b', re.I)
 MONEY_RE    = re.compile(r'([$\£\€])\s*([0-9]+(?:\.[0-9]{1,2})?)')
 
-# plausible single-pack sizes (g)
 LIKELY_TIN_SIZES_G = [28,30,50,56,57,85,100,113,114,125,180,200,250,500,1000]
+PREFERRED_SIZES_G  = [28,30,50,100,113,114,125,250]  # what we pick if multiple
 
 GRADE_RANK = {
     "imperial": 1, "royal": 2, "reserve": 3, "gold": 3,
@@ -42,11 +42,10 @@ def grade_rank(text):
             return rank, g.title()
     return 99, None
 
-# Only accept true sturgeon species below. Anything mentioning the NON list is rejected.
 SPECIES_PATTERNS = [
     (r"\bbeluga\b|\bhuso\s*huso\b", "Beluga", "Huso huso"),
-    (r"\bkaluga\b|\bhuso\s*dauricus\b", "Kaluga", "Huso dauricus"),
-    (r"\bkaluga\s*hybrid\b|\b(amur|schrenckii).*(kaluga)|kaluga.*(amur|schrenckii)", "Kaluga Hybrid", "Huso dauricus × Acipenser schrenckii"),
+    (r"\bkaluga\b|\bhuso\s*dauricus\b|\bkeluga\b", "Kaluga", "Huso dauricus"),
+    (r"\bkaluga\s*hybrid\b|\b(amur|schrenckii).*(kaluga|keluga)|(kaluga|keluga).*(amur|schrenckii)", "Kaluga Hybrid", "Huso dauricus × Acipenser schrenckii"),
     (r"\bamur\b|\bacipenser\s*schrenckii\b|\bschrenckii\b", "Amur", "Acipenser schrenckii"),
     (r"\bosc?ietr?a\b|\bossetra\b|\bgueldenstaedtii\b", "Osetra", "Acipenser gueldenstaedtii"),
     (r"\bsevruga\b|\bacipenser\s*stellatus\b|\bstellatus\b", "Sevruga", "Acipenser stellatus"),
@@ -55,13 +54,11 @@ SPECIES_PATTERNS = [
     (r"\bsterlet\b|\bacipenser\s*ruthenus\b|\bruthenus\b", "Sterlet", "Acipenser ruthenus"),
     (r"\bhackleback\b|\bshovelnose\b|\bscaphirhynchus\s*platorynchus\b", "Hackleback", "Scaphirhynchus platorynchus"),
 ]
-# reject pages that mention any of these anywhere (prevents “specials” with salmon, etc.)
 NON_STURGEON_TOKENS = [
     "salmon", "trout", "whitefish", "capelin", "lumpfish", "bowfin", "paddlefish",
     "tobiko", "masago", "ikura", "smelt", "cod roe"
 ]
 
-# Accessories / bundles etc. (word-boundary)
 ACCESSORY_TOKENS = [
     "gift", "set", "bundle", "sampler", "flight", "pairing", "experience", "kit",
     "accessory", "accessories", "spoon", "opener",
@@ -88,7 +85,7 @@ VENDOR_HOME_STATE = {
 }
 
 # =========================
-# HTTP sessions (per-site)
+# HTTP sessions
 # =========================
 def make_session():
     s = requests.Session()
@@ -101,8 +98,7 @@ def make_session():
         "Upgrade-Insecure-Requests": "1",
     })
     retries = Retry(
-        total=4,
-        backoff_factor=0.6,
+        total=4, backoff_factor=0.6,
         status_forcelist=[403, 429, 500, 502, 503, 504],
         allowed_methods=["GET", "HEAD"],
         raise_on_status=False,
@@ -122,8 +118,7 @@ def site_session():
 def safe_get(sess, url, referer=None, timeout=20):
     try:
         headers = {}
-        if referer:
-            headers["Referer"] = referer
+        if referer: headers["Referer"] = referer
         return sess.get(url, headers=headers, timeout=timeout, allow_redirects=True)
     except Exception as e:
         if VERBOSE_LOG: print("GET exception:", e, url)
@@ -209,15 +204,53 @@ def looks_sold_out(soup, page_text, availability=None, variant_available=None):
     if variant_available is False:
         return True
     t = (page_text or "").lower()
-    # common shopify/misc copy
     if "sold out" in t or "out of stock" in t or "currently unavailable" in t:
         return True
-    # disabled buttons
     for b in soup.find_all(["button","a"]):
         txt = (b.get_text(" ", strip=True) or "").lower()
         if "sold out" in txt:
             return True
     return False
+
+# NEW: get tin sizes from offers/variants if page text lacks a size
+def sizes_from_offers_and_variants(soup):
+    sizes=set()
+
+    # JSON-LD offers
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            data=json.loads(tag.string or "{}")
+        except Exception:
+            continue
+        for it in (data if isinstance(data,list) else [data]):
+            if not isinstance(it, dict): continue
+            offers = it.get("offers")
+            cand=[]
+            if isinstance(offers, dict): cand=[offers]
+            elif isinstance(offers, list): cand=[o for o in offers if isinstance(o,dict)]
+            for o in cand:
+                txt = " ".join([o.get("name",""), o.get("description",""), o.get("sku","")])
+                sg = parse_size(txt)
+                if sg and any(abs(sg - s)<=2 for s in LIKELY_TIN_SIZES_G):
+                    sizes.add(int(round(sg)))
+
+    # Shopify variants
+    for tag in soup.find_all("script", type="application/json"):
+        txt=tag.string or ""
+        if '"variants"' not in txt: continue
+        try:
+            data=json.loads(txt)
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            for v in (data.get("variants") or []):
+                sg = parse_size(v.get("title",""))
+                if sg and any(abs(sg - s)<=2 for s in LIKELY_TIN_SIZES_G):
+                    sizes.add(int(round(sg)))
+
+    # prefer standard tin sizes
+    ordered = sorted(sizes, key=lambda x: (x not in PREFERRED_SIZES_G, PREFERRED_SIZES_G.index(x) if x in PREFERRED_SIZES_G else 999, x))
+    return ordered
 
 # =========================
 # SQLite
@@ -276,7 +309,6 @@ def latest_best_by_vendor(conn):
 # Structured data helpers
 # =========================
 def extract_ld_offers(soup):
-    """Return list of {name, desc, offers:[{price,currency,name,sku,availability}]}"""
     items=[]
     for tag in soup.find_all("script", type="application/ld+json"):
         try:
@@ -310,7 +342,6 @@ def extract_ld_offers(soup):
     return items
 
 def extract_shopify_variants(soup):
-    """Return list of shopify variants: {title,size_g,price,currency,available}"""
     results=[]
     for tag in soup.find_all("script", type="application/json"):
         txt=tag.string or ""
@@ -347,52 +378,55 @@ def scrape_product(sess, url, vendor, referer=None, default_species=None):
         return []
     soup = BeautifulSoup(r.text, "lxml")
 
-    # Product name
     title = (soup.title.string if soup.title else "") or ""
     h1 = soup.find("h1")
     name = (h1.get_text(" ", strip=True) if h1 else title).strip()
 
-    # page text surface (includes meta)
+    # page text (meta + body)
     metas = []
     for meta in soup.select("meta[property='og:title'],meta[name='og:title'],meta[name='twitter:title'],meta[name='description'],meta[property='og:description']"):
         c = meta.get("content") or ""
         if c: metas.append(c)
     page_text = " ".join([name] + metas + [soup.get_text(" ", strip=True)])
 
-    # must be "caviar" somewhere on page
-    if not (CAVIAR_WORD.search((name or "").lower()) or CAVIAR_WORD.search(page_text.lower())):
-        if VERBOSE_LOG: print(f"[skip:{vendor}] not caviar: {url}")
-        return []
-
-    # accessories rejected by NAME (to avoid removing legit pages that mention 'gift' below)
+    # accessories rejected by NAME
     if is_accessory_name_only(name):
         if VERBOSE_LOG: print(f"[skip:{vendor}] accessory/gift by name: {url}")
         return []
 
-    # if page mentions any non-sturgeon species anywhere, reject
+    # reject if mentions non-sturgeon anywhere
     if mentions_non_sturgeon(page_text):
         if VERBOSE_LOG: print(f"[skip:{vendor}] mentions non-sturgeon: {url}")
         return []
 
-    # sturgeon species required (allow default from YAML)
+    # require either the word 'caviar' OR a recognized sturgeon species
     species, latin = extract_species(name)
     if not species:
         species, latin = extract_species(page_text)
     if not species and default_species:
         s2, l2 = extract_species(default_species)
-        if s2:
-            species, latin = s2, l2
+        if s2: species, latin = s2, l2
+    if not (species or CAVIAR_WORD.search(page_text.lower())):
+        if VERBOSE_LOG: print(f"[skip:{vendor}] not caviar / no species: {url}")
+        return []
     if not species:
+        # if word 'caviar' present but no species, skip (we require species)
         if VERBOSE_LOG: print(f"[skip:{vendor}] species not found: {url}")
         return []
 
-    # plausible tin/jar size
+    grade_label = grade_from_text(name + " " + page_text)
+
+    # size from text, else from offers/variants
     size_g = parse_size(name) or parse_size(page_text)
+    derived_sizes = []
+    if not size_g:
+        derived_sizes = sizes_from_offers_and_variants(soup)
+        size_g = (derived_sizes[0] if derived_sizes else None)
+
     if not size_g or not any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G):
         if VERBOSE_LOG: print(f"[skip:{vendor}] no plausible tin/jar size: {url}")
         return []
 
-    grade_label = grade_from_text(name + " " + page_text)
     out=[]
 
     # JSON-LD offers — match variant by size tokens; require InStock and price>0
@@ -404,12 +438,11 @@ def scrape_product(sess, url, vendor, referer=None, default_species=None):
             cand = [o for o in item["offers"] if any(t in (o.get("name","")+" "+o.get("sku","")).lower() for t in tokens)]
             offer = cand[0] if cand else None
         if not offer and item["offers"]:
-            priced=[o in item["offers"] for o in item["offers"]]
             priced=[o for o in item["offers"] if o.get("price")]
             offer = sorted(priced, key=lambda x:x["price"])[0] if priced else None
 
         if offer:
-            avail = offer.get("availability","")  # could be URL like http://schema.org/InStock
+            avail = offer.get("availability","")
             price = offer.get("price")
             if price and price > 0 and not looks_sold_out(soup, page_text, availability=avail):
                 sl = size_label_both(size_g)
@@ -427,30 +460,32 @@ def scrape_product(sess, url, vendor, referer=None, default_species=None):
     if not out:
         vars_ = extract_shopify_variants(soup)
         if vars_:
+            # if we derived size from variants list, prefer that exact size
+            preferred_sizes = [int(round(size_g))] + derived_sizes if derived_sizes else [int(round(size_g))]
+            match = None
+            # exact token/title match first
             tokens = size_tokens(size_g)
-            # prefer exact token match
-            best = None
             for v in vars_:
                 t = (v["title"] or "").lower()
                 if any(tok in t for tok in tokens):
-                    best = v
-                    break
-            if not best:
-                # fallback to nearest size within ±2g
-                cand = [v for v in vars_ if abs(v["size_g"]-size_g) <= 2]
-                best = cand[0] if cand else None
-            if best and best.get("available") and best.get("price",0) > 0:
-                sl = size_label_both(best["size_g"])
-                per_g = round(best["price"]/best["size_g"], 2)
+                    match = v; break
+            # else nearest size among preferred sizes
+            if not match:
+                cand = sorted(vars_, key=lambda v: (abs(v["size_g"]-size_g), v["price"]))
+                if cand: match = cand[0]
+            if match and match.get("available") and (match.get("price",0) > 0):
+                sg = match["size_g"]
+                sl = size_label_both(sg)
+                per_g = round(match["price"]/sg, 2)
                 out.append({
                     "vendor": vendor, "url": url, "name": name,
                     "species": species, "species_latin": latin,
-                    "grade": grade_label, "currency": best["currency"],
-                    "price": float(best["price"]), "size_g": float(best["size_g"]), "size_label": sl,
+                    "grade": grade_label, "currency": match["currency"],
+                    "price": float(match["price"]), "size_g": float(sg), "size_label": sl,
                     "per_g": per_g, "origin_state": vendor_state(vendor)
                 })
 
-    # Last resort: parse inline price; discard if 'sold out' or price <= 0
+    # Last resort: inline price, only if not sold out and >0
     if not out:
         m_price = MONEY_RE.search(page_text)
         if m_price:
@@ -467,10 +502,10 @@ def scrape_product(sess, url, vendor, referer=None, default_species=None):
                     "per_g": per_g, "origin_state": vendor_state(vendor)
                 })
 
-    # sanity: drop insane values
+    # sanity filters
     cleaned=[]
     for r in out:
-        if r["per_g"] <= 0 or r["per_g"] > 100:   # guardrails
+        if r["per_g"] <= 0 or r["per_g"] > 100:
             continue
         cleaned.append(r)
 
@@ -603,13 +638,11 @@ def crawl_site(site_cfg, deadline):
 
     # BFS crawl categories
     if datetime.utcnow() < deadline and start_urls:
-        discovered = discover_bfs(sess, start_urls, allow, deadline)
-        product_links.update(discovered)
+        product_links.update(discover_bfs(sess, start_urls, allow, deadline))
 
     # Sitemaps
     if datetime.utcnow() < deadline and start_urls:
-        discovered_sm = discover_from_sitemap(sess, start_urls[0], allow, deadline)
-        product_links.update(discovered_sm)
+        product_links.update(discover_from_sitemap(sess, start_urls[0], allow, deadline))
 
     # product_link selector sweep (first page only)
     for start in start_urls:
