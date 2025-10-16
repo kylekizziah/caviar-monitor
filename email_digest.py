@@ -3,6 +3,7 @@ from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import smtplib
+import traceback
 
 from dotenv import load_dotenv
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -32,14 +33,11 @@ def best_sort_key(item):
     return (grade_rank, per_g, prox)
 
 def group_and_pick(rows):
-    # Keep only tins/jars with size and species
     goods = [r for r in rows if r.get("size_g") and r.get("species")]
-    # Bucket
     buckets = {}
     for r in goods:
         b = bucket_for_size(r["size_g"])
         buckets.setdefault(b, []).append(r)
-    # Sort each bucket and pick top N
     top_picks = {}
     for b, items in buckets.items():
         items_sorted = sorted(items, key=best_sort_key)
@@ -53,18 +51,35 @@ env = Environment(
 )
 
 def render_html(date_str, top_picks, buckets):
+    # Use your existing filename (no rename needed)
     tpl = env.get_template("digest_templates.html")
     return tpl.render(date=date_str, top_picks=top_picks, buckets=buckets)
 
 def render_text(date_str, top_picks, buckets):
-    lines = [f"🐟 Daily Caviar Digest — {date_str}", "Cheapest verified sturgeon caviar options across trusted producers.", ""]
+    lines = [
+        f"🐟 Daily Caviar Digest — {date_str}",
+        "Cheapest verified sturgeon caviar options across trusted producers.",
+        ""
+    ]
     any_items = False
     for bname, items in top_picks.items():
-        if not items: continue
+        if not items:
+            continue
         any_items = True
         lines.append(f"{bname}:")
         for it in items:
-            lines.append(f"• {it['vendor']} — {it['species']}{f' ({it['grade']})' if it.get('grade') else ''} {it['size_label']} — {it['currency']} {it['price']:.2f} (${it['per_g']:.2f}/g) — {it.get('origin_state') or 'US'}")
+            grade_str = f" ({it['grade']})" if it.get("grade") else ""
+            vendor = it.get("vendor","")
+            species = it.get("species","")
+            size_label = it.get("size_label","")
+            currency = it.get("currency","USD")
+            price = it.get("price", 0.0)
+            per_g = it.get("per_g", 0.0)
+            origin = it.get("origin_state") or "US"
+            lines.append(
+                f"• {vendor} — {species}{grade_str} {size_label} — "
+                f"{currency} {price:.2f} (${per_g:.2f}/g) — {origin}"
+            )
         lines.append("")
     if not any_items:
         lines.append("No caviar listings with verified species found in this run.")
@@ -74,7 +89,8 @@ def render_text(date_str, top_picks, buckets):
 # ---------- Email ----------
 def send_email(subject, html_body, text_body):
     if not (GMAIL_USER and GMAIL_APP_PASSWORD and DEST_EMAIL):
-        print("Missing Gmail SMTP env vars"); return
+        print("Missing Gmail SMTP env vars: GMAIL_USER / GMAIL_APP_PASSWORD / DEST_EMAIL")
+        return
     msg = MIMEMultipart("alternative")
     msg["From"] = GMAIL_USER
     msg["To"] = DEST_EMAIL
@@ -88,14 +104,19 @@ def send_email(subject, html_body, text_body):
         s.sendmail(GMAIL_USER, [DEST_EMAIL], msg.as_string())
 
 def main():
-    results = run_scrape("price_sites.yaml")  # list of rows
-    buckets, top_picks = group_and_pick(results)
-    date_str = datetime.now().strftime("%B %d, %Y")
-    html = render_html(date_str, top_picks, buckets)
-    text = render_text(date_str, top_picks, buckets)
-    subject = f"🐟 Daily Caviar Digest — {date_str}"
-    send_email(subject, html, text)
-    print("Digest sent to", DEST_EMAIL)
+    try:
+        results = run_scrape("price_sites.yaml")
+        buckets, top_picks = group_and_pick(results)
+        date_str = datetime.now().strftime("%B %d, %Y")
+        html = render_html(date_str, top_picks, buckets)
+        text = render_text(date_str, top_picks, buckets)
+        subject = f"🐟 Daily Caviar Digest — {date_str}"
+        send_email(subject, html, text)
+        print("Digest sent to", DEST_EMAIL)
+    except Exception as e:
+        print("FATAL ERROR in email_digest.py:", e)
+        print(traceback.format_exc())
+        raise
 
 if __name__ == "__main__":
     main()
