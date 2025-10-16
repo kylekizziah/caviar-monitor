@@ -1,35 +1,12 @@
-# 🐟 Caviar Monitor
+# 🐟 Daily Caviar Digest
 
-**Caviar Monitor** is a simple Python service that collects news, pricing on tins/jars, updates, and research about caviar around the world.
-It can summarize new articles and send you a **daily email digest**.
+Automated scraper + email digest for verified **sturgeon caviar tins/jars** in the U.S.  
+Parses **species**, **grade**, **size (oz / g)**, price, and **$/g**. Sends a daily email via **SendGrid**.
 
----
+## What you get
+- Filters out accessories/gift sets and non-sturgeon roe.
+- Only includes items where **species** is stated (Beluga, Kaluga, Amur, Osetra, Sevruga, Siberian, White Sturgeon, Sterlet, Hackleback).
+- Buckets by size: For 2 (30–50 g), For 4 (~100 g), Specials (125–250 g), Bulk (500 g+).
+- Picks cheapest options per bucket.
 
-### 🚀 How It Works
-1. Fetches caviar-related news using the [NewsAPI](https://newsapi.org/).  
-2. Filters and ranks articles by relevance and importance.  
-3. Summarizes and formats them into a clean HTML digest.  
-4. Emails the digest automatically once per day via SendGrid.
-
----
-
-### 🧰 Main Files
-| File | Purpose |
-|------|----------|
-| `main.py` | Main runner script |
-| `requirements.txt` | Python dependencies |
-| `.env.example` | Environment-variable template |
-| `templates/digest_template.html` | Email HTML template |
-
----
-
-### ⚙️ Setup Overview
-1. Get a NewsAPI key and a SendGrid API key.  
-2. Copy `.env.example` → `.env` and fill in your keys.  
-3. Deploy to Render or any cloud that supports daily cron jobs.  
-4. Enjoy your daily **Caviar Digest** in your inbox!
-
----
-
-© 2025 Caviar Monitor Project
-
+## Files
