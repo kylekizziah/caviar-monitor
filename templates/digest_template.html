@@ -1,105 +1,61 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html>
 <head>
-<meta charset="utf-8">
-<title>Daily Caviar Digest</title>
-<style>
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: #f8f8f8;
-    color: #333;
-    margin: 0; padding: 2rem;
-  }
-  h1 { margin-bottom: 0.2em; }
-  h2 { margin-top: 1.5em; color: #222; }
-  table {
-    width: 100%; border-collapse: collapse; background: white; border-radius: 6px;
-  }
-  th, td {
-    padding: 8px 10px; text-align: left; border-bottom: 1px solid #eee;
-  }
-  th {
-    background: #fafafa;
-    font-weight: 600;
-    font-size: 0.95em;
-  }
-  tr:hover td { background: #f5faff; }
-  a { color: #0059c9; text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  .species {
-    font-style: italic;
-    color: #555;
-    font-size: 0.9em;
-  }
-  footer {
-    margin-top: 2rem; font-size: 0.8em; color: #888;
-  }
-</style>
+  <meta charset="utf-8">
+  <title>Daily Caviar Digest</title>
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:#f7f7f9; color:#222; margin:0; padding:20px; }
+    h1 { margin: 0 0 6px 0; }
+    h2 { margin: 18px 0 8px 0; }
+    .card { background:#fff; border:1px solid #eee; border-radius:8px; padding:14px; margin:10px 0; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { padding:8px 10px; border-bottom:1px solid #eee; text-align:left; }
+    th { background:#fafafa; font-size: 0.95em; }
+    a { color:#0a5; text-decoration:none; }
+    a:hover { text-decoration:underline; }
+    .muted { color:#666; font-size:12px; }
+  </style>
 </head>
 <body>
+  <h1>🐟 Daily Caviar Digest — {{ date }}</h1>
+  <p>Cheapest verified sturgeon caviar options across trusted producers.</p>
 
-<h1>🐟 Daily Caviar Digest — {{ date }}</h1>
-<p>Cheapest verified sturgeon caviar options across trusted producers.</p>
-
-{% if cheapest and cheapest|length > 0 %}
-<h2>💰 Cheapest Options (price/gram)</h2>
-<table>
-  <thead>
-    <tr>
-      <th>Seller</th>
-      <th>Product</th>
-      <th>Species</th>
-      <th>Size</th>
-      <th>Price</th>
-      <th>$/g</th>
-      <th>Link</th>
-    </tr>
-  </thead>
-  <tbody>
-  {% for item in cheapest %}
-    <tr>
-      <td>{{ item.site }}</td>
-      <td>{{ item.name }}</td>
-      <td>
-        {{ item.species }}
-        {% if item.species_latin %}
-          <div class="species">{{ item.species_latin }}</div>
-        {% endif %}
-      </td>
-      <td>{{ item.size_label }}</td>
-      <td>{{ item.currency }} {{ "%.2f"|format(item.price) }}</td>
-      <td>{{ "%.2f"|format(item.per_g) }}</td>
-      <td><a href="{{ item.url }}">View</a></td>
-    </tr>
+  {% set any_items = false %}
+  {% for bucket, items in top_picks.items() %}
+    {% if items and items|length > 0 %}
+      {% set any_items = true %}
+      <div class="card">
+        <h2>{{ bucket }}</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Vendor</th><th>Species / Grade</th><th>Size</th><th>Price</th><th>$ / g</th><th>Ship From</th><th>Link</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for it in items %}
+            <tr>
+              <td>{{ it.vendor }}</td>
+              <td>{{ it.species }}{% if it.grade %} <span class="muted">({{ it.grade }})</span>{% endif %}</td>
+              <td>{{ it.size_label }}</td>
+              <td>{{ it.currency }} {{ "%.2f"|format(it.price) }}</td>
+              <td>{{ "%.2f"|format(it.per_g) }}</td>
+              <td>{{ it.origin_state or "US" }}</td>
+              <td><a href="{{ it.url }}">View</a></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
   {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<p>No caviar listings with verified species found in this run.</p>
-{% endif %}
 
-{% if movers and movers|length > 0 %}
-<h2>📉 Notable Price Changes (24–72h)</h2>
-<table>
-  <thead>
-    <tr><th>Seller</th><th>Product</th><th>Size</th><th>Change</th></tr>
-  </thead>
-  <tbody>
-  {% for mv in movers %}
-    <tr>
-      <td>{{ mv.site }}</td>
-      <td>{{ mv.name }}</td>
-      <td>{{ mv.size_label }}</td>
-      <td>{{ mv.delta_sign }}{{ "%.2f"|format(mv.delta_pct) }}%</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table>
-{% endif %}
+  {% if not any_items %}
+  <div class="card">
+    No caviar listings with verified species found in this run.
+  </div>
+  {% endif %}
 
-<footer>
-  <p>Data gathered automatically from verified producers & farms. Prices may change. Update <code>price_sites.yaml</code> to add or remove sellers.</p>
-</footer>
-
+  <p class="muted">Data gathered automatically from verified producers &amp; farms. Prices may change. Edit <code>price_sites.yaml</code> to add/remove sellers.</p>
 </body>
 </html>
