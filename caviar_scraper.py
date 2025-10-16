@@ -1,15 +1,17 @@
 import os, re, json, time, yaml, sqlite3
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse
+from pathlib import Path
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
 from bs4 import BeautifulSoup
 
 # ---------- config ----------
+BASE_DIR = Path(__file__).resolve().parent
 RUN_LIMIT_SECONDS  = int(os.getenv("RUN_LIMIT_SECONDS", "150"))
 MAX_LINKS_PER_SITE = int(os.getenv("MAX_LINKS_PER_SITE", "60"))
-DB_PATH            = os.getenv("DB_PATH", "caviar_agent.db")
+DB_PATH            = os.getenv("DB_PATH", str(BASE_DIR / "caviar_agent.db"))
 
 # Home base for proximity scoring (Athens, GA)
 HOME_STATE = "GA"
@@ -20,7 +22,6 @@ SIZE_RE     = re.compile(r'(\d+(?:\.\d+)?)\s*(g|gram|grams|oz|ounce|ounces)\b', 
 MONEY_RE    = re.compile(r'([$\£\€])\s*([0-9]+(?:\.[0-9]{1,2})?)')
 LIKELY_TIN_SIZES_G = [28,30,50,56,57,85,100,114,125,180,200,250,500,1000]
 
-# Grades ordered best→lowest (tune as you like)
 GRADE_RANK = {
     "imperial": 1,
     "royal": 2,
@@ -60,22 +61,14 @@ EXCLUDE_WORDS = [
 ]
 NON_STURGEON_ROE = ["salmon roe","trout roe","whitefish roe","tobiko","masago","ikura","capelin","lumpfish","paddlefish","bowfin"]
 
-# Approx shipping “proximity” scoring for US states (closer to GA better)
 STATE_DISTANCE_BUCKET = {
-    # GA neighbors / Southeast
     "GA":0, "AL":1, "FL":1, "TN":1, "SC":1, "NC":1, "MS":2, "LA":2, "VA":2,
-    # East/Mid-Atlantic
     "MD":2, "DC":2, "DE":2, "PA":3, "NJ":3, "NY":3, "MA":4, "CT":4, "RI":4, "VT":5, "NH":5, "ME":6,
-    # Midwest
     "KY":2, "WV":2, "OH":3, "MI":4, "IN":3, "IL":3, "WI":4, "MN":5, "IA":4, "MO":3,
-    # Plains/Texas
     "TX":3, "OK":3, "AR":2, "KS":4, "NE":4, "SD":5, "ND":6,
-    # Mountain/West
     "CO":4, "NM":4, "AZ":5, "UT":5, "ID":6, "MT":6, "WY":6, "NV":6,
-    # West Coast
     "CA":6, "OR":6, "WA":6,
 }
-
 VENDOR_HOME_STATE = {
     "Marshallberg Farm": "NC",
     "Island Creek": "MA",
@@ -140,8 +133,7 @@ def looks_like_product_url(u_low):
     return ("/product" in u_low) or ("/products/" in u_low) or ("/collections/" in u_low and "/products/" in u_low) or ("/shop/" in u_low and "/category/" not in u_low)
 
 def vendor_state(vendor_name):
-    st = VENDOR_HOME_STATE.get(vendor_name)
-    return st or "FL"  # default
+    return VENDOR_HOME_STATE.get(vendor_name, "FL")
 
 def proximity_score(state):
     return STATE_DISTANCE_BUCKET.get(state, 6)
@@ -175,7 +167,6 @@ def store(conn, rows):
     conn.commit()
 
 def latest_best_by_vendor(conn):
-    # latest per (vendor,url,size)
     q = """
       WITH latest AS (
         SELECT vendor,url,name,species,species_latin,grade,currency,price,size_g,size_label,per_g,origin_state,seen_at,
@@ -193,7 +184,7 @@ def latest_best_by_vendor(conn):
                     "size_g":sg,"size_label":sl,"per_g":pg,"url":u,"origin_state":st})
     return out
 
-# ---------- scraping ----------
+# ---------- scraping helpers ----------
 def extract_ld_offers(soup):
     items=[]
     for tag in soup.find_all("script", type="application/ld+json"):
@@ -238,7 +229,6 @@ def extract_shopify_variants(soup):
         except Exception:
             continue
         if isinstance(data, dict):
-            # collect tags/options for extra species/grade hints
             for key in ("tags","options","vendor","type","product_type"):
                 v=data.get(key)
                 if isinstance(v, list): extras.append(" ".join(map(str,v)))
@@ -265,17 +255,14 @@ def scrape_product(url, vendor):
     h1_text = h1.get_text(" ", strip=True) if h1 else ""
     name = (h1_text or title).strip()
 
-    # must be actual caviar tin/jar
     if not (CAVIAR_WORD.search(name.lower()+ " "+ text.lower())): return []
     if is_accessory(name) or is_accessory(text): return []
     if non_sturgeon(name) or non_sturgeon(text): return []
 
-    # species & grade
     species, latin = extract_species(name) or (None,None)
     if not species:
         species, latin = extract_species(text)
     if not species:
-        # try JSON-LD additionalProperty
         for tag in soup.find_all("script", type="application/ld+json"):
             try:
                 data=json.loads(tag.string or "{}")
@@ -285,11 +272,10 @@ def scrape_product(url, vendor):
             species, latin = extract_species(blob)
             if species: break
     if not species:
-        return []  # species required
+        return []
 
     gr_rank, grade_label = grade_rank(name + " " + text)
 
-    # price/size from JSON-LD
     out=[]
     ld = extract_ld_offers(soup)
     got_variant=False
@@ -298,12 +284,10 @@ def scrape_product(url, vendor):
         size_g = parse_size(nm + " " + item.get("desc","") + " " + text)
         offer = None
         if size_g:
-            # find best offer that mentions size tokens
             toks = size_tokens(size_g)
             candidates = [o for o in item["offers"] if any(t in (o.get("name","")+ " "+o.get("sku","")).lower() for t in toks)]
             offer = candidates[0] if candidates else None
         if not offer and item["offers"]:
-            # fallback cheapest
             priced=[o for o in item["offers"] if o.get("price")]
             offer = sorted(priced, key=lambda x:x["price"])[0] if priced else None
         if size_g and offer and offer.get("price"):
@@ -326,7 +310,6 @@ def scrape_product(url, vendor):
             break
 
     if not got_variant:
-        # platform variants (Shopify)
         vars, extras = extract_shopify_variants(soup)
         if vars:
             for v in vars:
@@ -360,7 +343,6 @@ def crawl_site(site_cfg, deadline):
     def domain_ok(u):
         return (not allow) or (urlparse(u).netloc.replace("www.","") in {d.replace("www.","") for d in allow})
 
-    # seeds first (guaranteed PDPs)
     for seed in site_cfg.get("seed_product_urls", [])[:MAX_LINKS_PER_SITE]:
         if datetime.utcnow() > deadline: return results
         if not (looks_like_product_url(seed.lower()) and domain_ok(seed)):
@@ -368,7 +350,6 @@ def crawl_site(site_cfg, deadline):
         results += scrape_product(seed, vendor)
         time.sleep(0.1)
 
-    # then category pages
     for start in site_cfg.get("start_urls", []):
         if datetime.utcnow() > deadline: return results
         r = safe_get(start)
@@ -379,11 +360,10 @@ def crawl_site(site_cfg, deadline):
         sel = (site_cfg.get("selectors") or {}).get("product_link")
         if sel:
             for a in soup.select(sel):
-                href=a.get("href"); 
+                href=a.get("href")
                 if not href: continue
                 full=urljoin(start, href)
                 if domain_ok(full) and looks_like_product_url(full.lower()): links.add(full)
-        # heuristic
         for a in soup.find_all("a", href=True):
             full=urljoin(start, a["href"])
             if domain_ok(full) and looks_like_product_url(full.lower()): links.add(full)
@@ -394,11 +374,15 @@ def crawl_site(site_cfg, deadline):
             time.sleep(0.1)
     return results
 
-# ---------- public API ----------
 def run_scrape(price_sites_yaml="price_sites.yaml"):
     start = datetime.utcnow()
     deadline = start + timedelta(seconds=RUN_LIMIT_SECONDS)
-    with open(price_sites_yaml, "r") as f:
+    yaml_path = Path(price_sites_yaml)
+    if not yaml_path.is_file():
+        # Try repo root as a fallback
+        alt = BASE_DIR / "price_sites.yaml"
+        yaml_path = alt if alt.is_file() else yaml_path
+    with open(yaml_path, "r") as f:
         config = yaml.safe_load(f) or {}
     sites = config.get("sites", [])
     conn = init_db(DB_PATH)
