@@ -53,7 +53,7 @@ env = Environment(
 )
 
 def render_html(date_str, top_picks, buckets):
-    tpl = env.get_template("digest.html")
+    tpl = env.get_template("digest_templates.html")
     return tpl.render(date=date_str, top_picks=top_picks, buckets=buckets)
 
 def render_text(date_str, top_picks, buckets):
