@@ -60,7 +60,7 @@ env = Environment(
 def render_html(date_str, top_picks, buckets):
     # You said you don't want to rename: use your file name
     try:
-        tpl = env.get_template("digest_templates.html")
+        tpl = env.get_template("digest_template.html")
         return tpl.render(date=date_str, top_picks=top_picks, buckets=buckets)
     except TemplateNotFound as e:
         # Fallback minimal HTML so the job never crashes
