@@ -11,14 +11,14 @@ from bs4 import BeautifulSoup
 # Config & paths
 # =========================
 BASE_DIR = Path(__file__).resolve().parent
-RUN_LIMIT_SECONDS     = int(os.getenv("RUN_LIMIT_SECONDS", "240"))   # give ourselves more time
+RUN_LIMIT_SECONDS     = int(os.getenv("RUN_LIMIT_SECONDS", "240"))
 MAX_LINKS_PER_SITE    = int(os.getenv("MAX_LINKS_PER_SITE", "500"))
 MAX_PAGES_PER_SITE    = int(os.getenv("MAX_PAGES_PER_SITE", "160"))
 MAX_PRODUCTS_PER_SITE = int(os.getenv("MAX_PRODUCTS_PER_SITE", "220"))
 DB_PATH               = os.getenv("DB_PATH", str(BASE_DIR / "caviar_agent.db"))
 VERBOSE_LOG           = os.getenv("VERBOSE_LOG", "1") == "1"
 
-# Optional proxy (e.g., ScraperAPI / ZenRows): http://user:pass@host:port
+# Optional proxy (e.g., ScraperAPI / ZenRows)
 HTTP_PROXY  = os.getenv("HTTP_PROXY")
 HTTPS_PROXY = os.getenv("HTTPS_PROXY")
 
@@ -42,7 +42,7 @@ GRADE_RANK = {
 def grade_rank(text):
     t=(text or "").lower()
     for g,rank in GRADE_RANK.items():
-        if g in t:
+        if re.search(rfr"\b{re.escape(g)}\b", t):
             return rank, g.title()
     return 99, None
 
@@ -60,13 +60,15 @@ SPECIES_PATTERNS = [
 ]
 NON_STURGEON_ROE = ["salmon roe","trout roe","whitefish roe","tobiko","masago","ikura","capelin","lumpfish","paddlefish","bowfin"]
 
-EXCLUDE_WORDS = [
-    "gift set","giftset","set","bundle","sampler","flight","pairing","experience","kit",
-    "accessory","accessories","spoon","mother of pearl","key","opener","tin opener",
-    "blini","bellini","creme","crème","server","bowl","tray","plate","dish","cooler","chiller",
-    "gift card","chips","tote","bag","club","subscription","subscribe","duo","trio","quad","pack",
-    "class","tasting","pair","collection","assortment","starter"
+# Accessory/gift *tokens* (word boundaries). We removed broad substrings like "class" or "pair".
+ACCESSORY_TOKENS = [
+    "gift", "set", "bundle", "sampler", "flight", "pairing", "experience", "kit",
+    "accessory", "accessories", "spoon", "mother of pearl", "opener",
+    "blini", "crème fraîche", "creme fraiche", "server", "bowl", "tray", "plate", "dish",
+    "cooler", "chiller", "gift card", "chips", "tote", "bag", "club", "subscription",
+    "duo", "trio", "quad", "pack", "collection", "assortment", "starter"
 ]
+ACCESSORY_RE = re.compile(r"|".join(rf"\b{re.escape(tok)}\b" for tok in ACCESSORY_TOKENS), re.I)
 
 PRODUCT_URL_HINTS = ("/products/", "/product/", "/shop/")
 DISALLOWED_URL_PARTS = (
@@ -90,12 +92,16 @@ VENDOR_HOME_STATE = {
 def make_session():
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
         "Upgrade-Insecure-Requests": "1",
+        # light “browsery” hints
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
     })
     retries = Retry(
         total=4,
@@ -114,7 +120,6 @@ def make_session():
     return s
 
 def site_session():
-    # separate session per site so cookies persist
     return make_session()
 
 def safe_get(sess, url, referer=None, timeout=20):
@@ -166,8 +171,9 @@ def size_label_both(size_g):
     return f"{oz_str} oz / {g} g"
 
 def is_accessory_name_only(product_name):
+    # word-boundary tokens only
     t=(product_name or "").lower()
-    return any(w in t for w in EXCLUDE_WORDS)
+    return bool(ACCESSORY_RE.search(t))
 
 def is_non_sturgeon(text):
     t=(text or "").lower()
@@ -221,8 +227,7 @@ def init_db(path):
 
 def store(conn, rows):
     if not rows: return
-    c = conn.cursor
-    cur = c()
+    cur = conn.cursor()
     for r in rows:
         cur.execute("""INSERT INTO prices(
             vendor,url,name,species,species_latin,grade,currency,price,size_g,size_label,per_g,origin_state,seen_at
@@ -230,7 +235,7 @@ def store(conn, rows):
         (r["vendor"], r["url"], r["name"], r["species"], r["species_latin"], r["grade"],
          r["currency"], r["price"], r["size_g"], r["size_label"], r["per_g"],
          r["origin_state"], datetime.utcnow().isoformat()))
-    cur.connection.commit()
+    conn.commit()
 
 def latest_best_by_vendor(conn):
     q = """
@@ -322,23 +327,24 @@ def scrape_product(sess, url, vendor, referer=None, default_species=None):
     h1 = soup.find("h1")
     name = (h1.get_text(" ", strip=True) if h1 else title).strip()
 
-    # must be caviar and not accessory — NAME ONLY for accessory filter
-    if not CAVIAR_WORD.search((name or "").lower()):
+    # collect page text early for better decisions
+    metas = []
+    for meta in soup.select("meta[property='og:title'],meta[name='og:title'],meta[name='twitter:title'],meta[name='description'],meta[property='og:description']"):
+        c = meta.get("content") or ""
+        if c: metas.append(c)
+    page_text = " ".join([name] + metas + [soup.get_text(" ", strip=True)])
+
+    # must be caviar somewhere on the page, not only in the name
+    if not CAVIAR_WORD.search((name or "").lower()) and not CAVIAR_WORD.search(page_text.lower()):
         if VERBOSE_LOG: print(f"[skip:{vendor}] not caviar: {url}")
         return []
+
+    # weed out accessories by *name* (word-boundary)
     if is_accessory_name_only(name):
         if VERBOSE_LOG: print(f"[skip:{vendor}] accessory/gift by name: {url}")
         return []
 
-    # broaden text surface for species/size detection
-    texts = [name]
-    for meta in soup.select("meta[property='og:title'],meta[name='og:title'],meta[name='twitter:title'],meta[name='description'],meta[property='og:description']"):
-        c = meta.get("content") or ""
-        if c: texts.append(c)
-    texts.append(soup.get_text(" ", strip=True))
-    page_text = " ".join(t for t in texts if t).strip()
-
-    # weed out non-sturgeon roe (OK to scan full text for this)
+    # weed out non-sturgeon roe (scan full page)
     if is_non_sturgeon(page_text):
         if VERBOSE_LOG: print(f"[skip:{vendor}] non-sturgeon roe: {url}")
         return []
@@ -409,7 +415,7 @@ def scrape_product(sess, url, vendor, referer=None, default_species=None):
                     })
                     break
         else:
-            # meta price + detected size
+            # meta/inline price + detected size
             m_price = MONEY_RE.search(page_text)
             if m_price:
                 cur = {'$':'USD','£':'GBP','€':'EUR'}.get(m_price.group(1),'USD')
@@ -569,7 +575,7 @@ def crawl_site(site_cfg, deadline):
         if product_link_sel:
             soup = BeautifulSoup(r.text, "lxml")
             for a in soup.select(product_link_sel):
-                href = a.get("href"); 
+                href = a.get("href")
                 if not href: continue
                 u = tidy_url(urljoin(start, href))
                 if same_domain(u, allow) and is_product_url(u):
@@ -580,7 +586,6 @@ def crawl_site(site_cfg, deadline):
         print(f"[{vendor}] discovered {len(product_list)} product URLs (seeds + crawl + sitemap)")
 
     kept=0
-    # Use 1st start URL as referer for product fetches (helps pass some bot checks)
     referer_for_site = start_urls[0] if start_urls else None
     for u in product_list:
         if datetime.utcnow() >= deadline:
