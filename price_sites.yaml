@@ -1,69 +1,43 @@
-# List of caviar sellers (US-focused). Each entry should point to a page that lists
-# actual product pages (not carts, not wholesale forms). The scraper will follow
-# product links like /product/ or /products/ and then extract size/price.
-
 sites:
-  - name: "Browne Trading"
-    start_urls:
-      - "https://brownetrading.com/product-category/caviar/"
-    allow_domains: ["brownetrading.com","www.brownetrading.com"]
-    selectors:
-      # Grid links that lead to single product pages
-      product_link: "ul.products li.product a.woocommerce-LoopProduct-link[href*='/product/']"
-      # Product page selectors (fallbacks; JSON-LD & WooCommerce variations are preferred)
-      name: "h1.product_title, h1.entry-title, h1"
-      price: "p.price, .summary [itemprop='price'], meta[property='og:price:amount']::attr(content)"
-
-  - name: "Marky's"
-    start_urls:
-      - "https://www.markys.com/caviar"
-    allow_domains: ["markys.com","www.markys.com"]
-    selectors:
-      # Magento-like product cards
-      product_link: "a.product-item-link[href*='/product/'], a[href*='/products/']"
-      name: "h1"
-      price: "[itemprop='price'], meta[property='og:price:amount']::attr(content), .price"
-
-  - name: "Black River Caviar"
-    start_urls:
-      - "https://www.blackrivercaviar.com/shop/"
-    allow_domains: ["blackrivercaviar.com","www.blackrivercaviar.com"]
-    selectors:
-      product_link: "a[href*='/product/']"
-      name: "h1.entry-title, h1.product_title, h1"
-      price: "p.price, [itemprop='price'], meta[property='og:price:amount']::attr(content)"
-
-  - name: "The Caviar Co."
-    start_urls:
-      - "https://thecaviarco.com/collections/caviar"
-    allow_domains: ["thecaviarco.com","www.thecaviarco.com"]
-    selectors:
-      product_link: "a[href*='/products/']"
-      name: "h1"
-      price: ".price, .price__regular, [itemprop='price'], meta[property='og:price:amount']::attr(content)"
-
-  - name: "Tsar Nicoulai"
-    start_urls:
-      - "https://www.tsarnicoulai.com/collections/caviar"
-    allow_domains: ["tsarnicoulai.com","www.tsarnicoulai.com"]
-    selectors:
-      product_link: "a[href*='/products/']"
-      name: "h1"
-      price: ".price, [itemprop='price'], meta[property='og:price:amount']::attr(content)"
-
-  - name: "Petrossian USA"
-    start_urls:
-      - "https://www.petrossian.com/collections/caviar"
-    allow_domains: ["petrossian.com","www.petrossian.com"]
-    selectors:
-      product_link: "a[href*='/products/']"
-      name: "h1"
-      price: ".price, [itemprop='price'], meta[property='og:price:amount']::attr(content)"
-
-# Tip:
-# - If a site shows variants (30g / 50g / 1 oz) on the same page, our main.py will
-#   read WooCommerce/Magento variations and emit separate rows per size with the
-#   correct price. The 'price' selector above is just a fallback.
-#
-# Optional safety net (set in Render → Environment):
-# SEED_PRODUCT_URLS = https://brownetrading.com/product/osetra-caviar-30g, https://www.markys.com/product/kaluga-caviar-1oz
+  - name: Marshallberg Farm
+    url: https://thecaviarfarm.com/product-category/osetra-caviar-grades/
+    region: NC
+    species_hint: Osetra
+    grades_hint: [Classic, Royal, Gold Reserve]
+    shipping_hint: FedEx Priority Overnight
+  - name: Island Creek
+    url: https://shop.islandcreekoysters.com/pages/caviar
+    region: MA
+    species_hint: American Osetra
+    grades_hint: []
+    shipping_hint: Overnight
+  - name: Pearl Street Caviar
+    url: https://pearlstreetcaviar.com/collections/caviar
+    region: NY
+    species_hint: [White Sturgeon, Siberian]
+    grades_hint: []
+    shipping_hint: Next Day (5pm ET cutoff)
+  - name: Marky's
+    url: https://www.markys.com/caviar/
+    region: FL
+    species_hint: [Osetra, Sevruga, Kaluga Hybrid, White Sturgeon]
+    grades_hint: [Imperial, Royal, Reserve, Select, Classic]
+    shipping_hint: Express (1 day) required
+  - name: Bemka (CaviarLover)
+    url: https://caviarlover.com/collections/caviar
+    region: FL
+    species_hint: [Osetra, Siberian, Kaluga Hybrid]
+    grades_hint: [Imperial, Royal, Reserve, Classic]
+    shipping_hint: FedEx Overnight
+  - name: Sterling Caviar
+    url: https://sterlingcaviar.com/collections/caviar
+    region: CA
+    species_hint: White Sturgeon
+    grades_hint: [Imperial, Royal]
+    shipping_hint: Overnight
+  - name: Tsar Nicoulai
+    url: https://tsarnicoulai.com/collections/caviar
+    region: CA
+    species_hint: White Sturgeon
+    grades_hint: [Classic, Estate, Reserve]
+    shipping_hint: Priority Overnight
