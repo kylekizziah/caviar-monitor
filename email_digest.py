@@ -1,23 +1,30 @@
 import os
+import smtplib
+import traceback
+from pathlib import Path
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import smtplib
-import traceback
 
 from dotenv import load_dotenv
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader, select_autoescape, TemplateNotFound
 
+# Local imports
 from caviar_scraper import run_scrape, proximity_score, vendor_state, GRADE_RANK
 
 load_dotenv()
 
+# ----- Absolute paths (works on Render, Docker, anywhere) -----
+BASE_DIR = Path(__file__).resolve().parent
+TEMPLATES_DIR = BASE_DIR / "templates"
+YAML_PATH = BASE_DIR / "price_sites.yaml"
+
 DEST_EMAIL = os.getenv("DEST_EMAIL", "kylekizziah@gmail.com")
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
-TZ = os.getenv("TZ","America/New_York")
+TZ = os.getenv("TZ", "America/New_York")
 
-# Buckets
+# ---------- Bucketing / ranking ----------
 def bucket_for_size(g):
     if g is None: return "Other"
     if g <= 50:   return "For 2 (30–50 g)"
@@ -46,14 +53,37 @@ def group_and_pick(rows):
 
 # ---------- Templates ----------
 env = Environment(
-    loader=FileSystemLoader("templates"),
-    autoescape=select_autoescape(["html","xml"])
+    loader=FileSystemLoader(str(TEMPLATES_DIR)),
+    autoescape=select_autoescape(["html", "xml"])
 )
 
 def render_html(date_str, top_picks, buckets):
-    # Use your existing filename (no rename needed)
-    tpl = env.get_template("digest_templates.html")
-    return tpl.render(date=date_str, top_picks=top_picks, buckets=buckets)
+    # You said you don't want to rename: use your file name
+    try:
+        tpl = env.get_template("digest_templates.html")
+        return tpl.render(date=date_str, top_picks=top_picks, buckets=buckets)
+    except TemplateNotFound as e:
+        # Fallback minimal HTML so the job never crashes
+        rows = []
+        for bname, items in top_picks.items():
+            for it in items:
+                rows.append(
+                    f"<tr><td>{it.get('vendor','')}</td>"
+                    f"<td>{it.get('species','')}"
+                    f"{' ('+it['grade']+')' if it.get('grade') else ''}</td>"
+                    f"<td>{it.get('size_label','')}</td>"
+                    f"<td>{it.get('currency','USD')} {it.get('price',0):.2f}</td>"
+                    f"<td>{it.get('per_g',0):.2f}</td>"
+                    f"<td><a href='{it.get('url','#')}'>View</a></td></tr>"
+                )
+        body = (
+            f"<h1>🐟 Daily Caviar Digest — {date_str}</h1>"
+            "<p>(Template not found; using fallback HTML.)</p>"
+            "<table border='1' cellpadding='6' cellspacing='0'>"
+            "<tr><th>Vendor</th><th>Species/Grade</th><th>Size</th><th>Price</th><th>$ / g</th><th>Link</th></tr>"
+            + "".join(rows) + "</table>"
+        )
+        return body
 
 def render_text(date_str, top_picks, buckets):
     lines = [
@@ -88,8 +118,13 @@ def render_text(date_str, top_picks, buckets):
 
 # ---------- Email ----------
 def send_email(subject, html_body, text_body):
-    if not (GMAIL_USER and GMAIL_APP_PASSWORD and DEST_EMAIL):
-        print("Missing Gmail SMTP env vars: GMAIL_USER / GMAIL_APP_PASSWORD / DEST_EMAIL")
+    missing = [k for k,v in {
+        "GMAIL_USER": GMAIL_USER,
+        "GMAIL_APP_PASSWORD": GMAIL_APP_PASSWORD,
+        "DEST_EMAIL": DEST_EMAIL
+    }.items() if not v]
+    if missing:
+        print("Missing env vars:", ", ".join(missing))
         return
     msg = MIMEMultipart("alternative")
     msg["From"] = GMAIL_USER
@@ -97,7 +132,6 @@ def send_email(subject, html_body, text_body):
     msg["Subject"] = subject
     msg.attach(MIMEText(text_body, "plain"))
     msg.attach(MIMEText(html_body, "html"))
-
     with smtplib.SMTP("smtp.gmail.com", 587) as s:
         s.starttls()
         s.login(GMAIL_USER, GMAIL_APP_PASSWORD)
@@ -105,7 +139,8 @@ def send_email(subject, html_body, text_body):
 
 def main():
     try:
-        results = run_scrape("price_sites.yaml")
+        # Absolute YAML path so Render finds it even if CWD differs
+        results = run_scrape(str(YAML_PATH))
         buckets, top_picks = group_and_pick(results)
         date_str = datetime.now().strftime("%B %d, %Y")
         html = render_html(date_str, top_picks, buckets)
@@ -116,6 +151,7 @@ def main():
     except Exception as e:
         print("FATAL ERROR in email_digest.py:", e)
         print(traceback.format_exc())
+        # Re-raise so Render shows 'Exit 1' with traceback
         raise
 
 if __name__ == "__main__":
