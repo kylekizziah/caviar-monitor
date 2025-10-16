@@ -11,12 +11,16 @@ from bs4 import BeautifulSoup
 # Config & paths
 # =========================
 BASE_DIR = Path(__file__).resolve().parent
-RUN_LIMIT_SECONDS   = int(os.getenv("RUN_LIMIT_SECONDS", "180"))   # total timebox per run
-MAX_LINKS_PER_SITE  = int(os.getenv("MAX_LINKS_PER_SITE", "400"))  # hard cap on discovered links per site
-MAX_PAGES_PER_SITE  = int(os.getenv("MAX_PAGES_PER_SITE", "120"))  # cap on crawled category/listing pages
-MAX_PRODUCTS_PER_SITE = int(os.getenv("MAX_PRODUCTS_PER_SITE", "180"))  # cap on scraped product pages per site
-DB_PATH             = os.getenv("DB_PATH", str(BASE_DIR / "caviar_agent.db"))
-VERBOSE_LOG         = os.getenv("VERBOSE_LOG", "1") == "1"         # print skip reasons
+RUN_LIMIT_SECONDS     = int(os.getenv("RUN_LIMIT_SECONDS", "240"))   # give ourselves more time
+MAX_LINKS_PER_SITE    = int(os.getenv("MAX_LINKS_PER_SITE", "500"))
+MAX_PAGES_PER_SITE    = int(os.getenv("MAX_PAGES_PER_SITE", "160"))
+MAX_PRODUCTS_PER_SITE = int(os.getenv("MAX_PRODUCTS_PER_SITE", "220"))
+DB_PATH               = os.getenv("DB_PATH", str(BASE_DIR / "caviar_agent.db"))
+VERBOSE_LOG           = os.getenv("VERBOSE_LOG", "1") == "1"
+
+# Optional proxy (e.g., ScraperAPI / ZenRows): http://user:pass@host:port
+HTTP_PROXY  = os.getenv("HTTP_PROXY")
+HTTPS_PROXY = os.getenv("HTTPS_PROXY")
 
 # =========================
 # Patterns & dictionaries
@@ -26,7 +30,6 @@ SIZE_RE     = re.compile(r'(\d+(?:\.\d+)?)\s*(g|gram|grams|oz|ounce|ounces)\b', 
 MONEY_RE    = re.compile(r'([$\£\€])\s*([0-9]+(?:\.[0-9]{1,2})?)')
 LIKELY_TIN_SIZES_G = [28,30,50,56,57,85,100,114,125,180,200,250,500,1000]
 
-# Grade priority (lower is “better”)
 GRADE_RANK = {
     "imperial": 1,
     "royal": 2,
@@ -43,7 +46,6 @@ def grade_rank(text):
             return rank, g.title()
     return 99, None
 
-# Recognized sturgeon species (strict filter)
 SPECIES_PATTERNS = [
     (r"\bbeluga\b|\bhuso\s*huso\b", "Beluga", "Huso huso"),
     (r"\bkaluga\b|\bhuso\s*dauricus\b", "Kaluga", "Huso dauricus"),
@@ -66,19 +68,12 @@ EXCLUDE_WORDS = [
     "class","tasting","pair","collection","assortment","starter"
 ]
 
-# Recognize product URL shapes (Shopify/Woo/etc.)
-PRODUCT_URL_HINTS = (
-    "/products/",          # Shopify canonical
-    "/product/",           # Woo / generic
-    "/shop/",              # many Woo sites use /shop/.../{product}
-)
+PRODUCT_URL_HINTS = ("/products/", "/product/", "/shop/")
 DISALLOWED_URL_PARTS = (
     "/cart", "/account", "/login", "/checkout", "/policy", "/policies",
-    "/privacy", "/terms", "/search", "/pages/", "/page-not-found",
-    "/contact", "/faq", "/returns", "/shipping", "/blog"
+    "/privacy", "/terms", "/search", "/page-not-found", "/contact", "/faq", "/returns", "/shipping", "/blog"
 )
 
-# Vendor → state (for proximity label)
 VENDOR_HOME_STATE = {
     "Marshallberg Farm": "NC",
     "Island Creek": "MA",
@@ -90,23 +85,44 @@ VENDOR_HOME_STATE = {
 }
 
 # =========================
-# HTTP session
+# HTTP sessions (per-site)
 # =========================
-def session():
+def make_session():
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Upgrade-Insecure-Requests": "1",
     })
-    retries = Retry(total=3, backoff_factor=0.4, status_forcelist=[429,500,502,503,504])
+    retries = Retry(
+        total=4,
+        backoff_factor=0.6,
+        status_forcelist=[403, 429, 500, 502, 503, 504],
+        allowed_methods=["GET", "HEAD"],
+        raise_on_status=False,
+    )
     s.mount("https://", HTTPAdapter(max_retries=retries))
     s.mount("http://",  HTTPAdapter(max_retries=retries))
+    if HTTP_PROXY or HTTPS_PROXY:
+        s.proxies.update({
+            "http": HTTP_PROXY or HTTPS_PROXY,
+            "https": HTTPS_PROXY or HTTP_PROXY
+        })
     return s
-SESSION = session()
 
-def safe_get(url, timeout=20):
+def site_session():
+    # separate session per site so cookies persist
+    return make_session()
+
+def safe_get(sess, url, referer=None, timeout=20):
     try:
-        return SESSION.get(url, timeout=timeout, allow_redirects=True)
+        headers = {}
+        if referer:
+            headers["Referer"] = referer
+        return sess.get(url, headers=headers, timeout=timeout, allow_redirects=True)
     except Exception as e:
         if VERBOSE_LOG: print("GET exception:", e, url)
         return None
@@ -122,11 +138,9 @@ def same_domain(u, allow_set):
     return (not allow_set) or (host in allow_set)
 
 def tidy_url(u):
-    """Normalize URL (strip fragments, keep query that matters)."""
     try:
         pr = urlparse(u)
         q = parse_qs(pr.query)
-        # keep page parameter; drop tracking
         keep = {}
         for k,v in q.items():
             kk = k.lower()
@@ -151,8 +165,8 @@ def size_label_both(size_g):
     oz_str = str(int(round(oz))) if abs(oz-round(oz))<0.05 else f"{oz:.1f}".rstrip("0").rstrip(".")
     return f"{oz_str} oz / {g} g"
 
-def is_accessory(text):
-    t=(text or "").lower()
+def is_accessory_name_only(product_name):
+    t=(product_name or "").lower()
     return any(w in t for w in EXCLUDE_WORDS)
 
 def is_non_sturgeon(text):
@@ -173,8 +187,21 @@ def grade_from_text(text):
     _, g = grade_rank(text or "")
     return g
 
+def size_tokens(size_g):
+    if not size_g: return set()
+    g = int(round(size_g))
+    oz = size_g/28.3495
+    oz_round = round(oz, 1)
+    tokens = {f"{g}g", f"{g} g"}
+    if g in (28,29,30): tokens |= {"28g","29g","30g","28 g","29 g","30 g"}
+    def ozs(x): return str(int(round(x))) if abs(x-round(x))<0.05 else f"{x:.1f}".rstrip('0').rstrip('.')
+    for o in {oz_round, round(oz)}:
+        s = ozs(o)
+        tokens |= {f"{s}oz", f"{s} oz", f"{s} ounce", f"{s} ounces"}
+    return {t.lower() for t in tokens}
+
 # =========================
-# SQLite (cache/history)
+# SQLite
 # =========================
 def init_db(path):
     conn = sqlite3.connect(path, check_same_thread=False)
@@ -194,14 +221,16 @@ def init_db(path):
 
 def store(conn, rows):
     if not rows: return
-    c = conn.cursor()
+    c = conn.cursor
+    cur = c()
     for r in rows:
-        c.execute("""INSERT INTO prices(vendor,url,name,species,species_latin,grade,currency,price,size_g,size_label,per_g,origin_state,seen_at)
-                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                  (r["vendor"], r["url"], r["name"], r["species"], r["species_latin"], r["grade"],
-                   r["currency"], r["price"], r["size_g"], r["size_label"], r["per_g"],
-                   r["origin_state"], datetime.utcnow().isoformat()))
-    conn.commit()
+        cur.execute("""INSERT INTO prices(
+            vendor,url,name,species,species_latin,grade,currency,price,size_g,size_label,per_g,origin_state,seen_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (r["vendor"], r["url"], r["name"], r["species"], r["species_latin"], r["grade"],
+         r["currency"], r["price"], r["size_g"], r["size_label"], r["per_g"],
+         r["origin_state"], datetime.utcnow().isoformat()))
+    cur.connection.commit()
 
 def latest_best_by_vendor(conn):
     q = """
@@ -281,36 +310,36 @@ def extract_shopify_variants(soup):
 # =========================
 # Product page scraper
 # =========================
-def scrape_product(url, vendor, default_species=None):
-    r = safe_get(url)
+def scrape_product(sess, url, vendor, referer=None, default_species=None):
+    r = safe_get(sess, url, referer=referer)
     if not (r and r.ok):
         if VERBOSE_LOG: print(f"[skip:{vendor}] GET failed: {url}")
         return []
     soup = BeautifulSoup(r.text, "lxml")
 
-    # Full text surface
-    texts = []
+    # Product name
     title = (soup.title.string if soup.title else "") or ""
-    texts.append(title)
     h1 = soup.find("h1")
-    if h1:
-        texts.append(h1.get_text(" ", strip=True))
+    name = (h1.get_text(" ", strip=True) if h1 else title).strip()
+
+    # must be caviar and not accessory — NAME ONLY for accessory filter
+    if not CAVIAR_WORD.search((name or "").lower()):
+        if VERBOSE_LOG: print(f"[skip:{vendor}] not caviar: {url}")
+        return []
+    if is_accessory_name_only(name):
+        if VERBOSE_LOG: print(f"[skip:{vendor}] accessory/gift by name: {url}")
+        return []
+
+    # broaden text surface for species/size detection
+    texts = [name]
     for meta in soup.select("meta[property='og:title'],meta[name='og:title'],meta[name='twitter:title'],meta[name='description'],meta[property='og:description']"):
         c = meta.get("content") or ""
         if c: texts.append(c)
     texts.append(soup.get_text(" ", strip=True))
     page_text = " ".join(t for t in texts if t).strip()
 
-    name = (h1.get_text(" ", strip=True) if h1 else title).strip()
-
-    # must be actual caviar tin/jar (exclude accessories, non-sturgeon)
-    if not (CAVIAR_WORD.search((name + " " + page_text).lower())):
-        if VERBOSE_LOG: print(f"[skip:{vendor}] not caviar: {url}")
-        return []
-    if is_accessory(name) or is_accessory(page_text):
-        if VERBOSE_LOG: print(f"[skip:{vendor}] accessory/gift: {url}")
-        return []
-    if is_non_sturgeon(name) or is_non_sturgeon(page_text):
+    # weed out non-sturgeon roe (OK to scan full text for this)
+    if is_non_sturgeon(page_text):
         if VERBOSE_LOG: print(f"[skip:{vendor}] non-sturgeon roe: {url}")
         return []
 
@@ -326,22 +355,27 @@ def scrape_product(url, vendor, default_species=None):
         if VERBOSE_LOG: print(f"[skip:{vendor}] species not found: {url}")
         return []
 
+    # must have a plausible tin/jar size (from name or text)
+    size_g = parse_size(name) or parse_size(page_text)
+    if not size_g or not any(abs(size_g - s) <= 2 for s in LIKELY_TIN_SIZES_G):
+        if VERBOSE_LOG: print(f"[skip:{vendor}] no plausible tin/jar size: {url}")
+        return []
+
     grade_label = grade_from_text(name + " " + page_text)
     out=[]
 
-    # JSON-LD offers
+    # JSON-LD offers — try to match size tokens to offer name/SKU
     for item in extract_ld_offers(soup):
         nm = item["name"] or name
-        size_g = parse_size(nm + " " + (item.get("desc","") or "") + " " + page_text)
         offer = None
-        if size_g and item["offers"]:
+        if item["offers"]:
             tokens = size_tokens(size_g)
             cand = [o for o in item["offers"] if any(t in (o.get("name","")+" "+o.get("sku","")).lower() for t in tokens)]
             offer = cand[0] if cand else None
         if not offer and item["offers"]:
             priced=[o for o in item["offers"] if o.get("price")]
             offer = sorted(priced, key=lambda x:x["price"])[0] if priced else None
-        if size_g and offer and offer.get("price"):
+        if offer and offer.get("price"):
             sl = size_label_both(size_g)
             out.append({
                 "vendor": vendor,
@@ -364,19 +398,20 @@ def scrape_product(url, vendor, default_species=None):
         vars_ = extract_shopify_variants(soup)
         if vars_:
             for v in vars_:
-                sl = size_label_both(v["size_g"])
-                out.append({
-                    "vendor": vendor, "url": url, "name": name,
-                    "species": species, "species_latin": latin,
-                    "grade": grade_label, "currency": v["currency"],
-                    "price": v["price"], "size_g": v["size_g"], "size_label": sl,
-                    "per_g": v["price"]/v["size_g"], "origin_state": vendor_state(vendor)
-                })
+                if abs(v["size_g"] - size_g) <= 2:
+                    sl = size_label_both(v["size_g"])
+                    out.append({
+                        "vendor": vendor, "url": url, "name": name,
+                        "species": species, "species_latin": latin,
+                        "grade": grade_label, "currency": v["currency"],
+                        "price": v["price"], "size_g": v["size_g"], "size_label": sl,
+                        "per_g": v["price"]/v["size_g"], "origin_state": vendor_state(vendor)
+                    })
+                    break
         else:
             # meta price + detected size
             m_price = MONEY_RE.search(page_text)
-            size_g = parse_size(name + " " + page_text)
-            if m_price and size_g:
+            if m_price:
                 cur = {'$':'USD','£':'GBP','€':'EUR'}.get(m_price.group(1),'USD')
                 price = float(m_price.group(2))
                 sl = size_label_both(size_g)
@@ -392,19 +427,6 @@ def scrape_product(url, vendor, default_species=None):
         print(f"[skip:{vendor}] no price/size match: {url}")
     return out
 
-def size_tokens(size_g):
-    if not size_g: return set()
-    g = int(round(size_g))
-    oz = size_g/28.3495
-    oz_round = round(oz, 1)
-    tokens = {f"{g}g", f"{g} g"}
-    if g in (28,29,30): tokens |= {"28g","29g","30g","28 g","29 g","30 g"}
-    def ozs(x): return str(int(round(x))) if abs(x-round(x))<0.05 else f"{x:.1f}".rstrip('0').rstrip('.')
-    for o in {oz_round, round(oz)}:
-        s = ozs(o)
-        tokens |= {f"{s}oz", f"{s} oz", f"{s} ounce", f"{s} ounces"}
-    return {t.lower() for t in tokens}
-
 # =========================
 # Discovery (deep crawl)
 # =========================
@@ -418,16 +440,13 @@ def is_category_like(u):
     low = u.lower()
     if any(x in low for x in DISALLOWED_URL_PARTS):
         return False
-    # catch “/collections/…”, “/category/…”, “/caviar”, “/shop” listing pages
     return any(x in low for x in ("/collections/", "/collection/", "/category/", "/categories/", "/caviar", "/shop", "/products"))
 
-def discover_bfs(start_urls, allow_set, deadline):
-    """Breadth-first crawl category/listing pages, follow pagination."""
+def discover_bfs(sess, start_urls, allow_set, deadline):
     seen = set()
     queue = []
     out_product_links = set()
 
-    # seed queue
     for s in (start_urls or []):
         if not s: continue
         u = tidy_url(s)
@@ -437,23 +456,19 @@ def discover_bfs(start_urls, allow_set, deadline):
     pages_crawled = 0
     while queue and pages_crawled < MAX_PAGES_PER_SITE and datetime.utcnow() < deadline:
         cur = queue.pop(0)
-        r = safe_get(cur)
+        r = safe_get(sess, cur)
         if not (r and r.ok):
             continue
         soup = BeautifulSoup(r.text, "lxml")
         pages_crawled += 1
 
-        # collect links
         links = set()
         for a in soup.find_all("a", href=True):
             u = urljoin(cur, a["href"])
             u = tidy_url(u)
-            if not same_domain(u, allow_set):
-                continue
-            if u in seen:
-                continue
-            if any(x in u.lower() for x in DISALLOWED_URL_PARTS):
-                continue
+            if not same_domain(u, allow_set): continue
+            if u in seen: continue
+            if any(x in u.lower() for x in DISALLOWED_URL_PARTS): continue
             if is_product_url(u):
                 out_product_links.add(u)
                 seen.add(u)
@@ -461,32 +476,26 @@ def discover_bfs(start_urls, allow_set, deadline):
             if is_category_like(u):
                 links.add(u)
 
-        # pagination hints
+        # rel="next"
         next_rel = soup.find("link", rel=lambda x: x and "next" in x.lower())
         if next_rel and next_rel.get("href"):
-            u = urljoin(cur, next_rel["href"])
-            u = tidy_url(u)
+            u = tidy_url(urljoin(cur, next_rel["href"]))
             if same_domain(u, allow_set) and u not in seen:
                 links.add(u)
 
-        # also find “Next” buttons
+        # "Next" text links
         for a in soup.find_all("a", string=re.compile(r'^\s*next\s*$', re.I)):
-            u = urljoin(cur, a.get("href") or "")
-            if u:
-                u = tidy_url(u)
-                if same_domain(u, allow_set) and u not in seen:
-                    links.add(u)
+            u = tidy_url(urljoin(cur, a.get("href") or ""))
+            if u and same_domain(u, allow_set) and u not in seen:
+                links.add(u)
 
-        # enqueue
         for u in links:
-            if len(seen) >= MAX_LINKS_PER_SITE:
-                break
+            if len(seen) >= MAX_LINKS_PER_SITE: break
             queue.append(u); seen.add(u)
 
     return list(out_product_links)[:MAX_PRODUCTS_PER_SITE]
 
-def discover_from_sitemap(base_url, allow_set, deadline):
-    """Try to read /sitemap.xml and pick product-like URLs quickly."""
+def discover_from_sitemap(sess, base_url, allow_set, deadline):
     try:
         pr = urlparse(base_url)
         root = f"{pr.scheme}://{pr.netloc}"
@@ -498,14 +507,13 @@ def discover_from_sitemap(base_url, allow_set, deadline):
         for sm in candidates:
             if datetime.utcnow() >= deadline:
                 break
-            r = safe_get(sm, timeout=10)
+            r = safe_get(sess, sm, timeout=10)
             if not (r and r.ok and r.headers.get("content-type","").startswith(("application/xml","text/xml"))):
                 continue
             try:
                 tree = ET.fromstring(r.text)
             except Exception:
                 continue
-            # sitemap index or urlset
             for loc in tree.iter():
                 if loc.tag.endswith("loc"):
                     u = tidy_url(loc.text or "")
@@ -524,7 +532,6 @@ def crawl_site(site_cfg, deadline):
     results=[]
     vendor = site_cfg.get("name", "Vendor")
 
-    # Normalize YAML fields
     allow = {norm_host(d) for d in (site_cfg.get("allow_domains") or [])}
     seed_urls = list(site_cfg.get("seed_product_urls") or [])
     start_urls = list(site_cfg.get("start_urls") or [])
@@ -532,7 +539,9 @@ def crawl_site(site_cfg, deadline):
     product_link_sel = selectors.get("product_link")
     default_species = site_cfg.get("default_species")
 
-    # 1) Seeds (exact products you trust)
+    sess = site_session()
+
+    # Seeds (trusted product URLs)
     product_links = set()
     for seed in seed_urls:
         if datetime.utcnow() >= deadline: break
@@ -541,22 +550,22 @@ def crawl_site(site_cfg, deadline):
         if same_domain(u, allow) and is_product_url(u):
             product_links.add(u)
 
-    # 2) Category/collection BFS (deep crawl)
+    # BFS crawl categories
     if datetime.utcnow() < deadline and start_urls:
-        discovered = discover_bfs(start_urls, allow, deadline)
+        discovered = discover_bfs(sess, start_urls, allow, deadline)
         product_links.update(discovered)
 
-    # 3) Site map discovery (fast catch-all)
+    # Sitemaps
     if datetime.utcnow() < deadline and start_urls:
-        # use first start as base
-        discovered_sm = discover_from_sitemap(start_urls[0], allow, deadline)
+        discovered_sm = discover_from_sitemap(sess, start_urls[0], allow, deadline)
         product_links.update(discovered_sm)
 
-    # 4) If site provided a product_link selector, scan those pages directly too
+    # product_link selector sweep (first page only)
     for start in start_urls:
         if datetime.utcnow() >= deadline: break
-        r = safe_get(start)
+        r = safe_get(sess, start)
         if not (r and r.ok): continue
+        referer = start
         if product_link_sel:
             soup = BeautifulSoup(r.text, "lxml")
             for a in soup.select(product_link_sel):
@@ -566,17 +575,18 @@ def crawl_site(site_cfg, deadline):
                 if same_domain(u, allow) and is_product_url(u):
                     product_links.add(u)
 
-    # Cap total products per site
     product_list = list(product_links)[:MAX_PRODUCTS_PER_SITE]
     if VERBOSE_LOG:
         print(f"[{vendor}] discovered {len(product_list)} product URLs (seeds + crawl + sitemap)")
 
     kept=0
+    # Use 1st start URL as referer for product fetches (helps pass some bot checks)
+    referer_for_site = start_urls[0] if start_urls else None
     for u in product_list:
         if datetime.utcnow() >= deadline:
             if VERBOSE_LOG: print(f"[{vendor}] timebox hit during products")
             break
-        rows = scrape_product(u, vendor, default_species=default_species)
+        rows = scrape_product(sess, u, vendor, referer=referer_for_site, default_species=default_species)
         results.extend(rows)
         if rows: kept += len(rows)
         time.sleep(0.06)
@@ -588,7 +598,7 @@ def crawl_site(site_cfg, deadline):
 # =========================
 # Public API
 # =========================
-def run_scrape(price_sites_yaml="price_sites.yaml"):
+def init_db_and_scrape(price_sites_yaml="price_sites.yaml"):
     start = datetime.utcnow()
     deadline = start + timedelta(seconds=RUN_LIMIT_SECONDS)
     yaml_path = Path(price_sites_yaml)
@@ -620,7 +630,6 @@ def bucket_for_size(g):
     return "Bulk (500 g+)"
 
 def best_sort_key(item):
-    # grade → $/g → vendor alpha
     rank = GRADE_RANK.get((item.get("grade") or "").lower(), 99)
     per_g = item.get("per_g") or 1e9
     vendor = item.get("vendor","")
