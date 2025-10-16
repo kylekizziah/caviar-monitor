@@ -1,6 +1,6 @@
 sites:
   - name: Marshallberg Farm
-    allow_domains: [ "marshallbergfarm.com" ]
+    allow_domains: ["marshallbergfarm.com"]
     start_urls:
       - https://marshallbergfarm.com/product-category/caviar/
     seed_product_urls:
@@ -11,7 +11,7 @@ sites:
       product_link: ".products a.woocommerce-LoopProduct-link"
 
   - name: Sterling
-    allow_domains: [ "sterlingcaviar.com", "www.sterlingcaviar.com" ]
+    allow_domains: ["sterlingcaviar.com","www.sterlingcaviar.com"]
     start_urls:
       - https://www.sterlingcaviar.com/collections/caviar
     seed_product_urls:
@@ -20,37 +20,135 @@ sites:
     default_species: White Sturgeon
 
   - name: Tsar Nicoulai
-    allow_domains: [ "tsarnicoulai.com", "www.tsarnicoulai.com" ]
+    allow_domains: ["tsarnicoulai.com","www.tsarnicoulai.com"]
     start_urls:
       - https://tsarnicoulai.com/collections/caviar
     seed_product_urls:
       - https://tsarnicoulai.com/products/estate-caviar-30g
       - https://tsarnicoulai.com/products/reserve-caviar-50g
-    # they sell Siberian/Osetra lines; we'll detect species from page text
 
   - name: Pearl Street Caviar
-    allow_domains: [ "pearlstreetcaviar.com", "www.pearlstreetcaviar.com" ]
+    allow_domains: ["pearlstreetcaviar.com","www.pearlstreetcaviar.com"]
     start_urls:
       - https://pearlstreetcaviar.com/collections/caviar
     seed_product_urls:
       - https://pearlstreetcaviar.com/products/kaluga-hybrid-caviar-50g
       - https://pearlstreetcaviar.com/products/siberian-caviar-30g
-    # canonicalization in code maps their "Beluga" branding to Kaluga Hybrid
 
   - name: Island Creek
-    allow_domains: [ "shop.islandcreekoysters.com", "islandcreekoysters.com" ]
+    allow_domains: ["shop.islandcreekoysters.com","islandcreekoysters.com"]
     start_urls:
       - https://shop.islandcreekoysters.com/collections/caviar
     seed_product_urls: []
 
   - name: Marky's
-    allow_domains: [ "markys.com", "www.markys.com" ]
+    allow_domains: ["markys.com","www.markys.com"]
     start_urls:
       - https://www.markys.com/caviar
-    seed_product_urls: []
+    seed_product_urls:
+      - https://www.markys.com/product/kaluga-caviar-1oz
+      - https://www.markys.com/product/osetra-caviar-1oz
 
   - name: Bemka / CaviarLover
-    allow_domains: [ "caviarlover.com", "www.caviarlover.com" ]
+    allow_domains: ["caviarlover.com","www.caviarlover.com"]
     start_urls:
       - https://www.caviarlover.com/product-category/caviar/
-    seed_product_urls: []
+    seed_product_urls:
+      - https://www.caviarlover.com/product/osetra-sturgeon-caviar-1oz/
+      - https://www.caviarlover.com/product/kaluga-hybrid-caviar-30g/
+
+  - name: Browne Trading
+    allow_domains: ["brownetrading.com","www.brownetrading.com"]
+    start_urls:
+      - https://brownetrading.com/product-category/caviar/
+    seed_product_urls:
+      - https://brownetrading.com/product/osetra-caviar-30g/
+      - https://brownetrading.com/product/siberian-caviar-50g/
+
+  - name: Seattle Caviar
+    allow_domains: ["seattlecaviar.com","www.seattlecaviar.com"]
+    start_urls:
+      - https://www.seattlecaviar.com/collections/caviar
+    seed_product_urls:
+      - https://www.seattlecaviar.com/products/kaluga-hybrid-30g
+      - https://www.seattlecaviar.com/products/osetra-50g
+
+  - name: Black River Caviar
+    allow_domains: ["blackrivercaviar.com","www.blackrivercaviar.com"]
+    start_urls:
+      - https://www.blackrivercaviar.com/shop/
+    seed_product_urls:
+      - https://www.blackrivercaviar.com/product/russian-oscietra-acipenser-gueldenstaedtii-malossol-caviar/
+      - https://www.blackrivercaviar.com/product/russian-oscietra-acipenser-gueldenstaedtii-imperial/
+
+  - name: The Caviar Co.
+    allow_domains: ["thecaviarco.com"]
+    start_urls:
+      - https://thecaviarco.com/collections/all-caviar
+    seed_product_urls:
+      - https://thecaviarco.com/products/classic-ostretta-30g
+      - https://thecaviarco.com/products/kaluga-hybrid-50g
+
+  - name: Petrossian USA
+    allow_domains: ["petrossian.com","www.petrossian.com"]
+    start_urls:
+      - https://www.petrossian.com/collections/caviar
+    seed_product_urls:
+      - https://www.petrossian.com/products/ossetra-classic-30g
+      - https://www.petrossian.com/products/kaluga-royal-50g
+
+  - name: Paramount Caviar
+    allow_domains: ["paramountcaviar.com","www.paramountcaviar.com"]
+    start_urls:
+      - https://www.paramountcaviar.com/collections/caviar
+    seed_product_urls:
+      - https://www.paramountcaviar.com/products/osetra-1oz
+      - https://www.paramountcaviar.com/products/kaluga-50g
+
+  - name: Imperia Caviar
+    allow_domains: ["imperiacaviar.com","www.imperiacaviar.com"]
+    start_urls:
+      - https://www.imperiacaviar.com/collections/caviar
+    seed_product_urls:
+      - https://www.imperiacaviar.com/products/kaluga-hybrid-caviar-1oz
+      - https://www.imperiacaviar.com/products/osetra-sturgeon-caviar-50g
+
+  - name: OLMA Caviar
+    allow_domains: ["olmafood.com","www.olmafood.com","olma.com","www.olma.com"]
+    start_urls:
+      - https://olmafood.com/collections/caviar
+    seed_product_urls:
+      - https://olmafood.com/products/osetra-sturgeon-caviar-1-oz
+      - https://olmafood.com/products/kaluga-sturgeon-caviar-50g
+
+  - name: Russ & Daughters
+    allow_domains: ["russanddaughters.com","www.russanddaughters.com"]
+    start_urls:
+      - https://russanddaughters.com/collections/caviar
+    seed_product_urls:
+      - https://russanddaughters.com/products/osetra-caviar-1oz
+      - https://russanddaughters.com/products/siberian-sturgeon-caviar-50g
+
+  - name: Zabars
+    allow_domains: ["zabars.com","www.zabars.com"]
+    start_urls:
+      - https://www.zabars.com/caviar
+    seed_product_urls:
+      - https://www.zabars.com/osetra-caviar-1oz/product.info
+      - https://www.zabars.com/siberian-caviar-50g/product.info
+
+  - name: Regiis Ova
+    allow_domains: ["regiisova.com","www.regiisova.com"]
+    start_urls:
+      - https://regiisova.com/collections/caviar
+    seed_product_urls:
+      - https://regiisova.com/products/kaluga-hybrid-30g
+      - https://regiisova.com/products/osetra-50g
+
+  - name: Roe Caviar
+    allow_domains: ["roecaviar.com","www.roecaviar.com"]
+    start_urls:
+      - https://roecaviar.com/collections/caviar
+    seed_product_urls:
+      - https://roecaviar.com/products/white-sturgeon-30g
+      - https://roecaviar.com/products/white-sturgeon-50g
