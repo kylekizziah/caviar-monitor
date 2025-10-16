@@ -646,3 +646,7 @@ def group_and_pick(rows):
         items_sorted = sorted(items, key=best_sort_key)
         top_picks[b] = items_sorted[:6]
     return buckets, top_picks
+
+# --- Back-compat alias for existing main.py imports ---
+def run_scrape(price_sites_yaml="price_sites.yaml"):
+    return init_db_and_scrape(price_sites_yaml)
